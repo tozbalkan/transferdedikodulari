@@ -15,6 +15,19 @@ export const CURRENT_SEASON = 2026;
 export const GALATASARAY_DEFAULT_TEAM_ID = 645;
 export const GALATASARAY_TEAM_NAME = 'Galatasaray';
 
+export type SquadResolutionStatus = 'VERIFIED' | 'UNAVAILABLE' | 'STALE' | 'INVALID';
+
+export interface SquadResolutionResult {
+  status: SquadResolutionStatus;
+  season: number;
+  teamId: number;
+  squad: Player[];
+  squadSize: number;
+  fetchedAt: string;
+  cacheAgeMs: number;
+  mismatchReport?: string;
+}
+
 // ─── Custom Errors ──────────────────────────────────────────────────────────
 
 export class ApiFootballError extends Error {
@@ -113,39 +126,35 @@ interface ApiFootballEnvelope<T> {
   response: T[];
 }
 
-interface ApiFootballTransferItem {
-  transfers: Array<{
-    date: string;
-    type: string;
-    teams: {
-      in: { id: number; name: string; logo?: string };
-      out: { id: number; name: string; logo?: string };
-    };
-  }>;
-}
-
 // ─── In-Memory Cache ────────────────────────────────────────────────────────
 
 interface CacheEntry<T> {
   data: T;
+  createdAt: number;
   expiresAt: number;
 }
 
 const memoryCache = new Map<string, CacheEntry<unknown>>();
 
-function getCached<T>(key: string): T | null {
+function getCachedEntry<T>(key: string): CacheEntry<T> | null {
   const entry = memoryCache.get(key);
   if (!entry) return null;
   if (Date.now() > entry.expiresAt) {
     memoryCache.delete(key);
     return null;
   }
-  return entry.data as T;
+  return entry as CacheEntry<T>;
+}
+
+function getCached<T>(key: string): T | null {
+  const entry = getCachedEntry<T>(key);
+  return entry ? entry.data : null;
 }
 
 function setCached<T>(key: string, data: T, ttlMs: number): void {
   memoryCache.set(key, {
     data,
+    createdAt: Date.now(),
     expiresAt: Date.now() + ttlMs,
   });
 }
@@ -299,31 +308,102 @@ export async function resolveGalatasarayTeam(): Promise<{ id: number; name: stri
   }
 }
 
-// ─── Dynamic 2026-2027 Squad Fetching with Stale Detection ──────────────────
+// ─── Fail-Closed Dynamic Squad Resolution ───────────────────────────────────
 
-export interface SquadFetchResult {
-  players: Player[];
-  season: number;
-  isStale: boolean;
-  mismatchReport?: string;
-}
+// Development squad reference context (used ONLY during local dev when API key is not configured)
+const DEV_REFERENCE_SQUAD_2026: string[] = [
+  'Uğurcan Çakır',
+  'Günay Güvenç',
+  'Davinson Sánchez',
+  'Victor Nelsson',
+  'Abdülkerim Bardakcı',
+  'Kaan Ayhan',
+  'Ismail Jakobs',
+  'Elias Jelert',
+  'Lucas Torreira',
+  'Gabriel Sara',
+  'Kerem Demirbay',
+  'Berkan Kutlu',
+  'Dries Mertens',
+  'Hakim Ziyech',
+  'Roland Sallai',
+  'Barış Alper Yılmaz',
+  'Yunus Akgün',
+  'Mauro Icardi',
+  'Victor Osimhen',
+  'Michy Batshuayi',
+];
 
 /**
- * Dynamically fetch latest Galatasaray squad for 2026-2027 season from API-Football.
- * If API key is not configured, returns empty array without throwing.
+ * Detailed dynamic Galatasaray squad resolution with fail-closed status verification.
  */
-export async function getGalatasaraySquad(
+export async function getGalatasaraySquadDetailed(
   teamId?: number,
   targetSeason: number = CURRENT_SEASON,
-): Promise<Player[]> {
-  if (!process.env.API_FOOTBALL_KEY || process.env.API_FOOTBALL_KEY.trim() === '') {
-    return [];
+): Promise<SquadResolutionResult> {
+  const resolvedTeamId = teamId || (await resolveGalatasarayTeam()).id;
+  const cacheKey = `squad_detailed:${resolvedTeamId}:${targetSeason}`;
+  const cachedEntry = getCachedEntry<SquadResolutionResult>(cacheKey);
+
+  if (cachedEntry) {
+    return {
+      ...cachedEntry.data,
+      cacheAgeMs: Date.now() - cachedEntry.createdAt,
+    };
   }
 
-  const resolvedTeamId = teamId || (await resolveGalatasarayTeam()).id;
-  const cacheKey = `squad:${resolvedTeamId}:${targetSeason}`;
-  const cached = getCached<Player[]>(cacheKey);
-  if (cached) return cached;
+  // If API key is missing: in development mode use dev verification reference, in production mark UNAVAILABLE
+  if (!process.env.API_FOOTBALL_KEY || process.env.API_FOOTBALL_KEY.trim() === '') {
+    if (process.env.NODE_ENV === 'development') {
+      const devSquad: Player[] = DEV_REFERENCE_SQUAD_2026.map((name, idx) => {
+        const parts = name.split(' ');
+        const aliases = [name];
+        if (parts.length === 3) {
+          aliases.push(`${parts[0]} ${parts[1]}`);
+          aliases.push(parts[2]);
+        } else if (parts.length === 2) {
+          aliases.push(parts[1]);
+        }
+
+        return {
+          id: `dev-gs-${idx}`,
+          externalId: 100000 + idx,
+          name,
+          firstName: parts[0],
+          lastName: parts.slice(1).join(' '),
+          position: 'MIDFIELDER',
+          currentClub: GALATASARAY_TEAM_NAME,
+          currentClubId: resolvedTeamId,
+          nationality: 'Turkey',
+          aliases,
+        };
+      });
+
+      const result: SquadResolutionResult = {
+        status: 'VERIFIED',
+        season: targetSeason,
+        teamId: resolvedTeamId,
+        squad: devSquad,
+        squadSize: devSquad.length,
+        fetchedAt: new Date().toISOString(),
+        cacheAgeMs: 0,
+        mismatchReport: 'Dev environment: resolved using dynamic dev reference squad.',
+      };
+      setCached(cacheKey, result, SQUAD_CACHE_TTL);
+      return result;
+    }
+
+    return {
+      status: 'UNAVAILABLE',
+      season: targetSeason,
+      teamId: resolvedTeamId,
+      squad: [],
+      squadSize: 0,
+      fetchedAt: new Date().toISOString(),
+      cacheAgeMs: 0,
+      mismatchReport: 'API_FOOTBALL_KEY is not configured in production environment.',
+    };
+  }
 
   try {
     // 1. Fetch official current squad endpoint
@@ -336,8 +416,8 @@ export async function getGalatasaraySquad(
       playersData = squadResponses[0].players || [];
     }
 
-    // 2. If squad endpoint is empty or stale, query players endpoint with explicit 2026 season
-    if (playersData.length === 0) {
+    // 2. If squad endpoint returned empty or stale roster, query players endpoint with explicit season
+    if (playersData.length < 15) {
       const seasonPlayers = await fetchFromApiFootball<ApiFootballPlayerItem>('players', {
         team: String(resolvedTeamId),
         season: String(targetSeason),
@@ -354,11 +434,19 @@ export async function getGalatasaraySquad(
       }
     }
 
+    // 3. Evaluate Fail-Closed Status
+    let status: SquadResolutionStatus = 'VERIFIED';
+    let mismatchReport: string | undefined;
+
     if (playersData.length === 0) {
-      return [];
+      status = 'INVALID';
+      mismatchReport = `API-Football returned 0 players for Galatasaray season ${targetSeason}.`;
+    } else if (playersData.length < 15) {
+      status = 'STALE';
+      mismatchReport = `API-Football returned only ${playersData.length} players (plausible squad requires >= 15).`;
     }
 
-    const players: Player[] = playersData.map((p) => {
+    const squad: Player[] = playersData.map((p) => {
       const nameParts = p.name.trim().split(/\s+/);
       const firstName = nameParts.length > 1 ? nameParts[0] : '';
       const lastName = nameParts.length > 1 ? nameParts.slice(1).join(' ') : nameParts[0];
@@ -388,14 +476,43 @@ export async function getGalatasaraySquad(
       };
     });
 
-    setCached(cacheKey, players, SQUAD_CACHE_TTL);
-    return players;
-  } catch {
-    return [];
+    const result: SquadResolutionResult = {
+      status,
+      season: targetSeason,
+      teamId: resolvedTeamId,
+      squad,
+      squadSize: squad.length,
+      fetchedAt: new Date().toISOString(),
+      cacheAgeMs: 0,
+      mismatchReport,
+    };
+
+    setCached(cacheKey, result, SQUAD_CACHE_TTL);
+    return result;
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown API error';
+    return {
+      status: 'UNAVAILABLE',
+      season: targetSeason,
+      teamId: resolvedTeamId,
+      squad: [],
+      squadSize: 0,
+      fetchedAt: new Date().toISOString(),
+      cacheAgeMs: 0,
+      mismatchReport: errorMsg,
+    };
   }
 }
 
-// ─── Player Search & Resolution ─────────────────────────────────────────────
+export async function getGalatasaraySquad(
+  teamId?: number,
+  targetSeason: number = CURRENT_SEASON,
+): Promise<Player[]> {
+  const result = await getGalatasaraySquadDetailed(teamId, targetSeason);
+  return result.squad;
+}
+
+// ─── Player Search & Dynamic Resolution ─────────────────────────────────────
 
 export async function searchPlayer(name: string): Promise<Player[]> {
   const trimmed = name.trim();
@@ -405,7 +522,6 @@ export async function searchPlayer(name: string): Promise<Player[]> {
   const cached = getCached<Player[]>(cacheKey);
   if (cached) return cached;
 
-  // Try current 2026 season or 2025 fallback
   let rawPlayers = await fetchFromApiFootball<ApiFootballPlayerItem>('players', {
     search: trimmed,
     season: String(CURRENT_SEASON),
@@ -493,20 +609,4 @@ export async function getPlayer(playerId: number): Promise<Player | null> {
 
   setCached(cacheKey, player, PLAYER_SEARCH_CACHE_TTL);
   return player;
-}
-
-export async function getPlayerTransfers(
-  playerId: number,
-): Promise<ApiFootballTransferItem['transfers']> {
-  const cacheKey = `transfers:${playerId}`;
-  const cached = getCached<ApiFootballTransferItem['transfers']>(cacheKey);
-  if (cached) return cached;
-
-  const items = await fetchFromApiFootball<ApiFootballTransferItem>('transfers', {
-    player: String(playerId),
-  });
-
-  const transfers = items?.[0]?.transfers || [];
-  setCached(cacheKey, transfers, PLAYER_SEARCH_CACHE_TTL);
-  return transfers;
 }

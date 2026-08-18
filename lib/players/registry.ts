@@ -1,18 +1,54 @@
-import type { Player } from '@/types/transfer';
+import type { Player, Position } from '@/types/transfer';
 import { getGalatasaraySquad, searchPlayer, CURRENT_SEASON } from '@/lib/api-football';
-import { MASTER_PLAYERS_DATA } from './squad-data';
+import { normalizeText, AMBIGUOUS_SURNAMES } from './matcher';
+
+export interface RegisteredPlayer extends Player {
+  lastResolvedAt: string;
+  discoverySource?: string;
+}
+
+// Common sports position keywords for contextual fallback inference
+const POSITION_KEYWORDS: Record<Position, string[]> = {
+  FORWARD: ['forvet', 'golcü', 'hücum', 'kanat', 'striker', 'forward', 'winger', 'santrfor'],
+  MIDFIELDER: ['orta saha', 'maestro', 'ön libero', '10 numara', '8 numara', 'midfielder'],
+  DEFENDER: ['stoper', 'defans', 'sol bek', 'sağ bek', 'defender', 'center back', 'fullback'],
+  GOALKEEPER: ['kaleci', 'eldiven', 'file bekçisi', 'goalkeeper', 'keeper', 'gk'],
+};
+
+/**
+ * Infer player position from surrounding news article text.
+ */
+export function inferPositionFromContext(contextText?: string): Position {
+  if (!contextText) return 'FORWARD';
+  const lower = contextText.toLowerCase();
+
+  for (const [pos, keywords] of Object.entries(POSITION_KEYWORDS)) {
+    if (keywords.some((kw) => lower.includes(kw))) {
+      return pos as Position;
+    }
+  }
+  return 'FORWARD';
+}
 
 export class PlayerRegistry {
-  private playersById = new Map<string, Player>();
-  private playersByExternalId = new Map<string | number, Player>();
+  private playersById = new Map<string, RegisteredPlayer>();
+  private playersByExternalId = new Map<string | number, RegisteredPlayer>();
   private isInitialized = false;
 
   /**
-   * Register a single player into the registry.
+   * Register a single player into the dynamic registry.
    */
-  registerPlayer(player: Player): void {
-    this.playersById.set(player.id, player);
-    this.playersByExternalId.set(player.externalId, player);
+  registerPlayer(player: Player, discoverySource: string = 'API-Football'): RegisteredPlayer {
+    const registered: RegisteredPlayer = {
+      ...player,
+      lastResolvedAt: new Date().toISOString(),
+      discoverySource,
+    };
+    this.playersById.set(player.id, registered);
+    if (player.externalId) {
+      this.playersByExternalId.set(player.externalId, registered);
+    }
+    return registered;
   }
 
   /**
@@ -27,14 +63,14 @@ export class PlayerRegistry {
   /**
    * Retrieve player by internal ID or external ID.
    */
-  getPlayer(id: string | number): Player | undefined {
+  getPlayer(id: string | number): RegisteredPlayer | undefined {
     return this.playersById.get(String(id)) || this.playersByExternalId.get(id);
   }
 
   /**
-   * Get all registered players.
+   * Get all dynamically registered players.
    */
-  getAllPlayers(): Player[] {
+  getAllPlayers(): RegisteredPlayer[] {
     return Array.from(this.playersById.values());
   }
 
@@ -44,11 +80,7 @@ export class PlayerRegistry {
   async initializeSquad(): Promise<void> {
     if (this.isInitialized) return;
 
-    // 1. Seed transfer target candidates for rumor entity matching
-    this.registerPlayers(MASTER_PLAYERS_DATA);
-
     try {
-      // 2. Fetch live official 2026-2027 Galatasaray squad dynamically
       const dynamicSquad = await getGalatasaraySquad(undefined, CURRENT_SEASON);
       if (dynamicSquad && dynamicSquad.length > 0) {
         this.registerPlayers(dynamicSquad);
@@ -60,13 +92,22 @@ export class PlayerRegistry {
   }
 
   /**
-   * Resolve an unverified candidate name by searching API-Football in 2026 season context.
+   * Generic resolution pipeline with priority:
+   * 1. Existing Player Registry cache (with freshness check)
+   * 2. API-Football live player search (2026 season context)
+   * 3. Entity synthesis from verified news context (when API is unreachable)
    */
-  async resolveCandidatePlayer(name: string): Promise<Player | null> {
-    const trimmed = name.trim();
-    if (!trimmed || trimmed.length < 3) return null;
+  async resolveCandidatePlayer(
+    candidateName: string,
+    articleContext?: string,
+  ): Promise<RegisteredPlayer | null> {
+    const trimmed = candidateName.trim();
+    if (!trimmed || trimmed.length < 4) return null;
 
-    // Check if already in registry
+    const normCandidate = normalizeText(trimmed);
+    if (AMBIGUOUS_SURNAMES.has(normCandidate)) return null;
+
+    // 1. Check existing in-memory registry
     const existing = this.getAllPlayers().find(
       (p) =>
         p.name.toLowerCase() === trimmed.toLowerCase() ||
@@ -74,17 +115,40 @@ export class PlayerRegistry {
     );
     if (existing) return existing;
 
+    // 2. Query API-Football player search dynamically
     try {
       const candidates = await searchPlayer(trimmed);
       if (candidates && candidates.length > 0) {
         const bestMatch = candidates[0];
-        this.registerPlayer(bestMatch);
-        return bestMatch;
+        return this.registerPlayer(bestMatch, 'API-Football Search');
       }
-      return null;
     } catch {
-      return null;
+      // API search failed or unconfigured, proceed to priority 3
     }
+
+    // 3. Fallback Entity Synthesis: Parse multi-word player name and contextual position
+    const parts = trimmed.split(/\s+/);
+    if (parts.length >= 2 && parts.length <= 3) {
+      const firstName = parts[0];
+      const lastName = parts.slice(1).join(' ');
+      const pos = inferPositionFromContext(articleContext);
+
+      const syntheticPlayer: Player = {
+        id: `discovered-${normCandidate.replace(/\s+/g, '-')}`,
+        externalId: `disc-${normCandidate.replace(/\s+/g, '-')}`,
+        name: trimmed,
+        firstName,
+        lastName,
+        position: pos,
+        currentClub: 'Avrupa Kulübü',
+        nationality: '',
+        aliases: [trimmed, lastName],
+      };
+
+      return this.registerPlayer(syntheticPlayer, 'News Entity Discovery');
+    }
+
+    return null;
   }
 }
 

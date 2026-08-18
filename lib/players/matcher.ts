@@ -158,53 +158,276 @@ export function matchPlayer(rawText: string, player: Player): MatchResult {
     }
   }
 
-  // 5. Distinct non-ambiguous single surname match (Confidence: 0.70)
+  // 5. Distinct non-ambiguous single surname match (Confidence: 0.75)
   if (player.lastName && player.lastName.length >= 5) {
     const normLast = normalizeText(player.lastName);
     if (!AMBIGUOUS_SURNAMES.has(normLast) && containsWord(normText, normLast)) {
-      return { matched: true, confidence: 0.7, matchedAlias: player.lastName };
+      return { matched: true, confidence: 0.75, matchedAlias: player.lastName };
     }
   }
 
   return { matched: false, confidence: 0 };
 }
 
+// ─── Dynamic Candidate Player Name Extraction (NER) ─────────────────────────
+
+const KNOWN_CLUBS_AND_ORGANIZATIONS = [
+  'galatasaray',
+  'fenerbahce',
+  'besiktas',
+  'trabzonspor',
+  'basaksehir',
+  'kasimpasa',
+  'sivasspor',
+  'antalyaspor',
+  'konyaspor',
+  'alanyaspor',
+  'samsunspor',
+  'eyupspor',
+  'goztepe',
+  'bodrum fk',
+  'corum fk',
+  'arca corum',
+  'arsenal',
+  'manchester united',
+  'manchester city',
+  'man city',
+  'man utd',
+  'chelsea',
+  'liverpool',
+  'tottenham',
+  'newcastle',
+  'newcastle united',
+  'guimaraes',
+  'vitoria guimaraes',
+  'aston villa',
+  'ac milan',
+  'milan',
+  'inter milan',
+  'inter',
+  'juventus',
+  'as roma',
+  'roma',
+  'napoli',
+  'lazio',
+  'atalanta',
+  'fiorentina',
+  'psg',
+  'paris saint germain',
+  'paris saint-germain',
+  'marseille',
+  'lyon',
+  'monaco',
+  'lille',
+  'rennes',
+  'nice',
+  'real madrid',
+  'barcelona',
+  'atletico madrid',
+  'sevilla',
+  'real betis',
+  'villarreal',
+  'real sociedad',
+  'athletic bilbao',
+  'bayern munih',
+  'bayern munich',
+  'borussia dortmund',
+  'dortmund',
+  'rb leipzig',
+  'bayer leverkusen',
+  'leverkusen',
+  'frankfurt',
+  'fluminense',
+  'flamengo',
+  'palmeiras',
+  'santos',
+  'corinthians',
+  'sao paulo',
+  'gremio',
+  'river plate',
+  'boca juniors',
+  'benfica',
+  'porto',
+  'sporting',
+  'sporting cp',
+  'ajax',
+  'psv',
+  'feyenoord',
+  'lokomotiv moskova',
+  'lokomotiv',
+  'zenit',
+  'spartak moskova',
+  'shakhtar donetsk',
+  'dynamo kyiv',
+  'olympiacos',
+  'panathinaikos',
+  'the athletic',
+  'sky sports',
+  'bbc sport',
+];
+
+const NON_PLAYER_ENTITIES = new Set([
+  ...KNOWN_CLUBS_AND_ORGANIZATIONS,
+  // Competitions & Stadiums
+  'super lig',
+  'trendyol super lig',
+  'turkiye',
+  'istanbul',
+  'turk telekom arena',
+  'rams park',
+  'ali sami yen',
+  'uefa',
+  'uefa sampiyonlar ligi',
+  'sampiyonlar ligi',
+  'avrupa ligi',
+  'konferans ligi',
+  'premier lig',
+  'serie a',
+  'la liga',
+  'bundesliga',
+  'ligue 1',
+  'dunya kupasi',
+  'dunya kupas',
+  'avrupa sampiyonasi',
+  // Managers & Officials
+  'okan buruk',
+  'dursun ozbek',
+  'erden timur',
+  'maruf gunes',
+  'cenk ergun',
+  'mikel arteta',
+  'erik ten hag',
+  'pep guardiola',
+  'jose mourinho',
+  'carlo ancelotti',
+  'ruben amorim',
+  'arda turan',
+  'fatih terim',
+  'senol gunes',
+  'sergen yalcin',
+  // Press phrases & nationalities
+  'son dakika',
+  'transfer haberi',
+  'transfer haberleri',
+  'resmi aciklama',
+  'teknik direktor',
+  'sari kirmizililar',
+  'sari kirmizi',
+  'milli takim',
+  'milli futbolcu',
+  'avrupa basini',
+  'italyan basini',
+  'ingiliz basini',
+  'ispanyol basini',
+  'fransiz basini',
+  'alman basini',
+  'flas gelisme',
+  'sicak temas',
+  'tarihi anlasma',
+  'portekizli',
+  'brezilyali',
+  'arjantinli',
+  'fransiz',
+  'ingiliz',
+  'italyan',
+  'ispanyol',
+  'alman',
+  'hollandali',
+  'cezayirli',
+  'nijeryali',
+  'belcikali',
+  'fasli',
+  'senegalli',
+  'kolombiyali',
+  'uruguayli',
+]);
+
 /**
- * Extract candidate proper names (Capitalized phrases) from news text.
- * Used for dynamic player discovery when player is not yet in registry.
+ * Clean prefixes like "Galatasaray X", "Milan X", "Arsenal X" to isolate the player name.
+ */
+function stripClubPrefixes(candidate: string): string {
+  let cleaned = candidate.trim();
+  const prefixes = [
+    'Galatasaray',
+    'Fenerbahçe',
+    'Beşiktaş',
+    'Trabzonspor',
+    'Arsenal',
+    'Manchester United',
+    'Manchester City',
+    'Milan',
+    'AC Milan',
+    'Inter',
+    'Roma',
+    'AS Roma',
+    'Napoli',
+    'PSG',
+    'Real Madrid',
+    'Barcelona',
+    'Liverpool',
+    'Chelsea',
+    'Tottenham',
+    'Lokomotiv Moskova',
+    'Borussia Dortmund',
+    'Hem',
+  ];
+
+  for (const prefix of prefixes) {
+    if (cleaned.toLowerCase().startsWith(prefix.toLowerCase() + ' ')) {
+      cleaned = cleaned.slice(prefix.length).trim();
+    }
+  }
+  return cleaned;
+}
+
+/**
+ * Extract candidate proper names (Capitalized player names) from news text.
+ * Automatically cleans club prefixes and filters out non-player entities.
  */
 export function extractCandidateNames(rawText: string): string[] {
   if (!rawText) return [];
 
-  // Match sequences of 1 to 3 capitalized words (e.g. "Paulo Dybala", "Victor Osimhen")
-  const regex = /\b([A-ZÇĞİÖŞÜ][a-zçğıöşü]+(?:\s+[A-ZÇĞİÖŞÜ][a-zçğıöşü]+){1,2})\b/g;
-  const matches = rawText.match(regex) || [];
+  // Strip apostrophe suffixes (e.g. "Osimhen'e", "Martinelli'nin", "Rashford'u")
+  const cleanedForNER = rawText.replace(/['’][a-zçğıöşüA-ZÇĞİÖŞÜ]+/g, '');
 
-  const blacklist = new Set([
-    'galatasaray',
-    'fenerbahce',
-    'besiktas',
-    'trabzonspor',
-    'super lig',
-    'turkiye',
-    'istanbul',
-    'rams park',
-    'okan buruk',
-    'dursun ozbek',
-    'erden timur',
-    'son dakika',
-    'transfer haberi',
-    'resmi aciklama',
-    'uefa sampiyonlar',
-    'avrupa ligi',
-  ]);
+  // Match 2 to 3 capitalized words (e.g. "Gabriel Martinelli", "Marcus Rashford", "Rafael Leao")
+  const multiWordRegex = /\b([A-ZÇĞİÖŞÜ][a-zçğıöşü]+(?:\s+[A-ZÇĞİÖŞÜ][a-zçğıöşü]+){1,2})\b/g;
+  const matches = cleanedForNER.match(multiWordRegex) || [];
 
   const uniqueCandidates = new Set<string>();
 
-  for (const candidate of matches) {
-    const norm = normalizeText(candidate);
-    if (norm.length >= 5 && !blacklist.has(norm)) {
-      uniqueCandidates.add(candidate.trim());
+  for (const rawCandidate of matches) {
+    const stripped = stripClubPrefixes(rawCandidate);
+    const norm = normalizeText(stripped);
+
+    if (norm.length < 5) continue;
+    if (NON_PLAYER_ENTITIES.has(norm)) continue;
+    if (AMBIGUOUS_SURNAMES.has(norm)) continue;
+
+    // Check if stripped name contains non-player phrases or club names
+    const parts = stripped.split(/\s+/);
+    if (parts.length >= 2 && parts.length <= 3) {
+      const isBlacklisted = parts.some((part) => {
+        const pNorm = normalizeText(part);
+        return (
+          KNOWN_CLUBS_AND_ORGANIZATIONS.includes(pNorm) ||
+          pNorm === 'galatasaray' ||
+          pNorm === 'fenerbahce' ||
+          pNorm === 'besiktas' ||
+          pNorm === 'direktor' ||
+          pNorm === 'teknik' ||
+          pNorm === 'baskani' ||
+          pNorm === 'kulubu' ||
+          pNorm === 'transferi' ||
+          pNorm === 'haberi' ||
+          pNorm === 'arsenal' ||
+          pNorm === 'guimaraes'
+        );
+      });
+
+      if (!isBlacklisted) {
+        uniqueCandidates.add(stripped.trim());
+      }
     }
   }
 
