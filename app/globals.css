@@ -1,0 +1,140 @@
+@import 'tailwindcss';
+
+:root {
+  --background: hsl(228, 38%, 5%);
+  --foreground: hsl(240, 20%, 93%);
+  --gs-yellow: hsl(43, 98%, 53%);
+  --gs-yellow-bright: hsl(44, 100%, 59%);
+  --gs-red: hsl(350, 85%, 42%);
+  --surface: hsl(231, 36%, 9%);
+  --surface-hover: hsl(232, 33%, 13%);
+  --surface-pill: hsla(231, 36%, 9%, 0.8);
+  --border: hsl(231, 34%, 18%);
+  --text-primary: hsl(240, 20%, 93%);
+  --text-secondary: hsl(226, 16%, 60%);
+  --text-muted: hsl(228, 15%, 36%);
+  --status-agreement: hsl(160, 84%, 39%);
+  --status-advanced: hsl(43, 98%, 53%);
+  --status-contact: hsl(38, 92%, 50%);
+  --status-rumor: hsl(0, 84%, 60%);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-gs-yellow: var(--gs-yellow);
+  --color-gs-yellow-bright: var(--gs-yellow-bright);
+  --color-gs-red: var(--gs-red);
+  --color-surface: var(--surface);
+  --color-surface-hover: var(--surface-hover);
+  --color-border: var(--border);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  overflow: hidden;
+  background: var(--background);
+  color: var(--foreground);
+  font-family:
+    var(--font-sans),
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Selection color matching Galatasaray theme */
+::selection {
+  background: hsla(43, 98%, 53%, 0.25);
+  color: hsl(0, 0%, 100%);
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: hsla(0, 0%, 100%, 0.15);
+  border-radius: 4px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: var(--gs-yellow);
+}
+
+/* ─── Phase 3.8 Explicit Guaranteed CSS Classes ────────────────────────────── */
+.hud-header-container {
+  padding: 20px 22px !important;
+  gap: 14px !important;
+}
+
+.hud-filter-bar {
+  min-height: 44px !important;
+  padding: 6px 8px !important;
+  gap: 7px !important;
+}
+
+.hud-filter-btn {
+  min-height: 32px !important;
+  padding: 7px 14px !important;
+}
+
+.hud-stat-card {
+  min-width: 88px !important;
+  min-height: 56px !important;
+  padding: 10px 14px !important;
+}
+
+.hud-player-label {
+  padding: 8px 12px !important;
+}
+
+.hud-controls-panel {
+  padding: 14px 16px !important;
+}
+
+.rumor-details-shell {
+  width: clamp(420px, 32vw, 480px) !important;
+}
+
+.rumor-details-content {
+  padding: 24px 26px !important;
+}
+
+.news-card-item {
+  padding: 10px 12px !important;
+  border-radius: 12px !important;
+}
