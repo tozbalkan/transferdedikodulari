@@ -1,5 +1,5 @@
 import type { Player } from '@/types/transfer';
-import { getGalatasaraySquad, searchPlayer } from '@/lib/api-football';
+import { getGalatasaraySquad, searchPlayer, CURRENT_SEASON } from '@/lib/api-football';
 import { MASTER_PLAYERS_DATA } from './squad-data';
 
 export class PlayerRegistry {
@@ -39,28 +39,28 @@ export class PlayerRegistry {
   }
 
   /**
-   * Initialize the registry with current squad master data and API-Football.
+   * Initialize the registry dynamically with live API-Football 2026-2027 squad data.
    */
   async initializeSquad(): Promise<void> {
     if (this.isInitialized) return;
-    // 1. Seed with known master squad & transfer target data
+
+    // 1. Seed transfer target candidates for rumor entity matching
     this.registerPlayers(MASTER_PLAYERS_DATA);
 
     try {
-      // 2. Supplement with live API-Football squad if available
-      const squad = await getGalatasaraySquad();
-      if (squad && squad.length > 0) {
-        this.registerPlayers(squad);
+      // 2. Fetch live official 2026-2027 Galatasaray squad dynamically
+      const dynamicSquad = await getGalatasaraySquad(undefined, CURRENT_SEASON);
+      if (dynamicSquad && dynamicSquad.length > 0) {
+        this.registerPlayers(dynamicSquad);
       }
       this.isInitialized = true;
     } catch {
-      // If API-Football is unconfigured or rate limited, master players are already ready
       this.isInitialized = true;
     }
   }
 
   /**
-   * Resolve an unverified candidate name by searching API-Football.
+   * Resolve an unverified candidate name by searching API-Football in 2026 season context.
    */
   async resolveCandidatePlayer(name: string): Promise<Player | null> {
     const trimmed = name.trim();

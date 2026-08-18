@@ -12,7 +12,7 @@ import { deduplicateArticles, isGalatasarayRelevant, type TransferDirection } fr
 import { matchPlayer, extractCandidateNames } from '@/lib/players/matcher';
 import { globalPlayerRegistry } from '@/lib/players/registry';
 import { calculateConfidence, calculateRumorScore, calculateTrend } from '@/lib/rumor/scorer';
-import { GALATASARAY_CURRENT_SQUAD_2025 } from '@/lib/players/squad-data';
+import { getGalatasaraySquad, CURRENT_SEASON } from '@/lib/api-football';
 import { SerperSearchNewsAdapter } from '@/lib/news/search-adapter';
 
 export const RUMOR_WINDOW_DAYS = 7;
@@ -36,6 +36,7 @@ export interface AggregationResult {
   rumors: TransferRumor[];
   meta: RumorsApiMeta;
   diagnostics?: {
+    season: number;
     fetchedArticles: number;
     transferRelevantArticles: number;
     uniqueArticles: number;
@@ -64,23 +65,26 @@ interface PlayerArticleBucket {
 }
 
 /**
- * Pure function to check if a transfer rumor is an active, valid INCOMING transfer rumor.
+ * Pure function to check if a transfer rumor is an active, valid INCOMING transfer rumor
+ * evaluated against dynamically resolved squad names.
  */
 export function isActiveIncomingRumor(
   rumor: TransferRumor,
-  currentSquad: string[] = GALATASARAY_CURRENT_SQUAD_2025,
+  currentSquadNames: Set<string>,
   windowDays: number = RUMOR_WINDOW_DAYS,
 ): { isActive: boolean; reason?: RejectionReason; details?: string } {
-  // 1. Check if player is currently in Galatasaray squad
-  const isCurrentPlayer = currentSquad.some(
-    (name) => name.toLowerCase() === rumor.player.name.toLowerCase(),
-  );
+  // 1. Dynamic Check: Is the player currently a member of Galatasaray squad?
+  const playerNameLower = rumor.player.name.toLowerCase();
+  const isCurrentPlayer =
+    currentSquadNames.has(playerNameLower) ||
+    rumor.player.currentClub?.toLowerCase().includes('galatasaray') ||
+    rumor.player.aliases.some((alias) => currentSquadNames.has(alias.toLowerCase()));
 
   if (isCurrentPlayer) {
     return {
       isActive: false,
       reason: 'CURRENT_SQUAD',
-      details: `${rumor.player.name} is already a current Galatasaray squad member.`,
+      details: `${rumor.player.name} is a resolved current Galatasaray squad member.`,
     };
   }
 
@@ -113,26 +117,33 @@ export function isActiveIncomingRumor(
 
 /**
  * Execute the complete live real data pipeline:
- * Live RSS + Search Feeds -> Deduplication -> Intent/Direction Classification -> Player Resolution -> Squad Filtering -> Scoring
+ * Dynamic Squad Resolution (2026-2027) -> Live RSS/Search -> Deduplication -> Intent Classification -> Squad Filtering -> Scoring
  */
 export async function aggregateLiveRumors(): Promise<AggregationResult> {
   const rejectedDiagnostics: RejectedRumorDiagnostic[] = [];
 
-  // Step 1: Fetch raw feeds from RSS
+  // Step 1: Dynamically resolve official 2026-2027 Galatasaray squad from API-Football
+  await globalPlayerRegistry.initializeSquad();
+  const dynamicSquad = await getGalatasaraySquad(undefined, CURRENT_SEASON);
+  const currentSquadNames = new Set<string>(
+    dynamicSquad.map((p) => p.name.toLowerCase()),
+  );
+
+  // Step 2: Fetch raw feeds from RSS & Search
   const { items: rawNewsItems, health: sourceHealth } = await fetchAllFeeds();
 
-  // Step 2: Attempt SearchNewsAdapter queries if configured
   const searchAdapter = new SerperSearchNewsAdapter();
-  const searchArticles = await searchAdapter.fetchArticles('Galatasaray transfer haberleri', RUMOR_WINDOW_DAYS);
+  const searchArticles = await searchAdapter.fetchArticles(
+    'Galatasaray transfer haberleri',
+    RUMOR_WINDOW_DAYS,
+  );
 
   const combinedRawItems = [...rawNewsItems, ...searchArticles];
-
-  // If live network feeds return 0 items (e.g. offline/DNS timeout), use verified real news archive
   const activeNewsItems = combinedRawItems.length > 0 ? combinedRawItems : FALLBACK_REAL_NEWS;
 
   // Step 3: Filter for Galatasaray relevance and transfer intent
   const relevantRawItems = activeNewsItems.filter((item) => {
-    const content = 'content' in item ? item.content : undefined;
+    const content = 'content' in item && typeof item.content === 'string' ? item.content : undefined;
     const rel = isGalatasarayRelevant(item.title, item.summary, content);
     if (!rel.isRelevant) {
       if (!rel.hasTransferIntent) {
@@ -149,8 +160,7 @@ export async function aggregateLiveRumors(): Promise<AggregationResult> {
   // Step 4: Deduplicate multi-source news articles
   const uniqueArticles = deduplicateArticles(relevantRawItems);
 
-  // Step 5: Initialize player registry with squad master data
-  await globalPlayerRegistry.initializeSquad();
+  // Step 5: Get all registered player entities
   const registeredPlayers = globalPlayerRegistry.getAllPlayers();
 
   // Step 6: Map each article to verified players
@@ -293,12 +303,12 @@ export async function aggregateLiveRumors(): Promise<AggregationResult> {
     });
   }
 
-  // Step 8: Apply Active Incoming Rumor Filter and collect Diagnostics
+  // Step 8: Apply Dynamic Active Incoming Rumor Filter (against live 2026-2027 squad)
   const incomingRumors: TransferRumor[] = [];
   let outgoingCount = 0;
 
   for (const rumor of allRumors) {
-    const eligibility = isActiveIncomingRumor(rumor, GALATASARAY_CURRENT_SQUAD_2025, RUMOR_WINDOW_DAYS);
+    const eligibility = isActiveIncomingRumor(rumor, currentSquadNames, RUMOR_WINDOW_DAYS);
 
     if (eligibility.isActive) {
       incomingRumors.push(rumor);
@@ -318,13 +328,9 @@ export async function aggregateLiveRumors(): Promise<AggregationResult> {
   incomingRumors.sort((a, b) => b.score - a.score);
 
   // Step 9: Compute accurate active window UI counters
-  // Unique articles contributing to active incoming rumors
   const activeArticleIds = new Set<string>();
-  const activeSourceNames = new Set<string>();
-
   incomingRumors.forEach((r) => {
     r.latestNews.forEach((n) => activeArticleIds.add(n.id));
-    r.sources.forEach((s) => activeSourceNames.add(s.name));
   });
 
   return {
@@ -337,10 +343,11 @@ export async function aggregateLiveRumors(): Promise<AggregationResult> {
       sourceHealth,
     },
     diagnostics: {
+      season: CURRENT_SEASON,
       fetchedArticles: activeNewsItems.length,
       transferRelevantArticles: relevantRawItems.length,
       uniqueArticles: uniqueArticles.length,
-      currentSquadSize: GALATASARAY_CURRENT_SQUAD_2025.length,
+      currentSquadSize: dynamicSquad.length,
       activeIncomingRumors: incomingRumors.length,
       activeOutgoingRumors: outgoingCount,
       rejected: rejectedDiagnostics,

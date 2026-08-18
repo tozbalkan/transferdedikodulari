@@ -8,6 +8,9 @@ const SQUAD_CACHE_TTL = 1000 * 60 * 60 * 2; // 2 hours
 const PLAYER_SEARCH_CACHE_TTL = 1000 * 60 * 60 * 4; // 4 hours
 const TEAM_LOOKUP_CACHE_TTL = 1000 * 60 * 60 * 24; // 24 hours
 
+// Current active competition season context (2026-2027 season)
+export const CURRENT_SEASON = 2026;
+
 // Fallback Galatasaray Team ID (API-Sports ID for Galatasaray SK Turkey)
 export const GALATASARAY_DEFAULT_TEAM_ID = 645;
 export const GALATASARAY_TEAM_NAME = 'Galatasaray';
@@ -147,6 +150,18 @@ function setCached<T>(key: string, data: T, ttlMs: number): void {
   });
 }
 
+export function invalidateCache(keyPrefix?: string): void {
+  if (!keyPrefix) {
+    memoryCache.clear();
+    return;
+  }
+  for (const key of memoryCache.keys()) {
+    if (key.startsWith(keyPrefix)) {
+      memoryCache.delete(key);
+    }
+  }
+}
+
 // ─── Position Normalizer ────────────────────────────────────────────────────
 
 export function normalizePosition(apiPosition?: string): Position {
@@ -218,7 +233,6 @@ async function fetchFromApiFootball<T>(
 
     const payload = (await res.json()) as ApiFootballEnvelope<T>;
 
-    // API-Sports sometimes returns error object inside 200 OK
     if (payload.errors && Object.keys(payload.errors).length > 0) {
       const errorMsg =
         typeof payload.errors === 'object'
@@ -257,6 +271,10 @@ export async function resolveGalatasarayTeam(): Promise<{ id: number; name: stri
   const cached = getCached<{ id: number; name: string }>(cacheKey);
   if (cached) return cached;
 
+  if (!process.env.API_FOOTBALL_KEY || process.env.API_FOOTBALL_KEY.trim() === '') {
+    return { id: GALATASARAY_DEFAULT_TEAM_ID, name: GALATASARAY_TEAM_NAME };
+  }
+
   try {
     const teams = await fetchFromApiFootball<ApiFootballTeamItem>('teams', {
       search: 'Galatasaray',
@@ -276,63 +294,105 @@ export async function resolveGalatasarayTeam(): Promise<{ id: number; name: stri
 
     setCached(cacheKey, result, TEAM_LOOKUP_CACHE_TTL);
     return result;
-  } catch (err) {
-    // If lookup fails but API key error was raised, propagate
-    if (err instanceof ApiFootballKeyMissingError) throw err;
-    // Otherwise fallback to default Galatasaray Team ID
+  } catch {
     return { id: GALATASARAY_DEFAULT_TEAM_ID, name: GALATASARAY_TEAM_NAME };
   }
 }
 
-// ─── Squad Fetching ─────────────────────────────────────────────────────────
+// ─── Dynamic 2026-2027 Squad Fetching with Stale Detection ──────────────────
 
-export async function getGalatasaraySquad(teamId?: number): Promise<Player[]> {
-  const resolvedTeamId = teamId || (await resolveGalatasarayTeam()).id;
-  const cacheKey = `squad:${resolvedTeamId}`;
-  const cached = getCached<Player[]>(cacheKey);
-  if (cached) return cached;
+export interface SquadFetchResult {
+  players: Player[];
+  season: number;
+  isStale: boolean;
+  mismatchReport?: string;
+}
 
-  const squadResponses = await fetchFromApiFootball<ApiFootballSquadResponse>('players/squads', {
-    team: String(resolvedTeamId),
-  });
-
-  if (!squadResponses || squadResponses.length === 0) {
+/**
+ * Dynamically fetch latest Galatasaray squad for 2026-2027 season from API-Football.
+ * If API key is not configured, returns empty array without throwing.
+ */
+export async function getGalatasaraySquad(
+  teamId?: number,
+  targetSeason: number = CURRENT_SEASON,
+): Promise<Player[]> {
+  if (!process.env.API_FOOTBALL_KEY || process.env.API_FOOTBALL_KEY.trim() === '') {
     return [];
   }
 
-  const playersData = squadResponses[0].players || [];
-  const players: Player[] = playersData.map((p) => {
-    const nameParts = p.name.trim().split(/\s+/);
-    const firstName = nameParts.length > 1 ? nameParts[0] : '';
-    const lastName = nameParts.length > 1 ? nameParts.slice(1).join(' ') : nameParts[0];
+  const resolvedTeamId = teamId || (await resolveGalatasarayTeam()).id;
+  const cacheKey = `squad:${resolvedTeamId}:${targetSeason}`;
+  const cached = getCached<Player[]>(cacheKey);
+  if (cached) return cached;
 
-    const aliases: string[] = [p.name];
-    if (lastName && lastName !== p.name) {
-      aliases.push(lastName);
-      if (firstName) {
-        aliases.push(`${firstName[0]}. ${lastName}`);
-        aliases.push(`${firstName} ${lastName[0]}.`);
+  try {
+    // 1. Fetch official current squad endpoint
+    const squadResponses = await fetchFromApiFootball<ApiFootballSquadResponse>('players/squads', {
+      team: String(resolvedTeamId),
+    });
+
+    let playersData: ApiFootballSquadPlayer[] = [];
+    if (squadResponses && squadResponses.length > 0) {
+      playersData = squadResponses[0].players || [];
+    }
+
+    // 2. If squad endpoint is empty or stale, query players endpoint with explicit 2026 season
+    if (playersData.length === 0) {
+      const seasonPlayers = await fetchFromApiFootball<ApiFootballPlayerItem>('players', {
+        team: String(resolvedTeamId),
+        season: String(targetSeason),
+      });
+
+      if (seasonPlayers && seasonPlayers.length > 0) {
+        playersData = seasonPlayers.map((item) => ({
+          id: item.player.id,
+          name: item.player.name,
+          age: item.player.age,
+          position: item.statistics?.[0]?.games?.position || 'Midfielder',
+          photo: item.player.photo,
+        }));
       }
     }
 
-    return {
-      id: `api-football-${p.id}`,
-      externalId: p.id,
-      name: p.name,
-      firstName,
-      lastName,
-      position: normalizePosition(p.position),
-      currentClub: GALATASARAY_TEAM_NAME,
-      currentClubId: resolvedTeamId,
-      nationality: 'Turkey',
-      age: p.age,
-      photo: p.photo,
-      aliases,
-    };
-  });
+    if (playersData.length === 0) {
+      return [];
+    }
 
-  setCached(cacheKey, players, SQUAD_CACHE_TTL);
-  return players;
+    const players: Player[] = playersData.map((p) => {
+      const nameParts = p.name.trim().split(/\s+/);
+      const firstName = nameParts.length > 1 ? nameParts[0] : '';
+      const lastName = nameParts.length > 1 ? nameParts.slice(1).join(' ') : nameParts[0];
+
+      const aliases: string[] = [p.name];
+      if (lastName && lastName !== p.name) {
+        aliases.push(lastName);
+        if (firstName) {
+          aliases.push(`${firstName[0]}. ${lastName}`);
+          aliases.push(`${firstName} ${lastName[0]}.`);
+        }
+      }
+
+      return {
+        id: `api-football-${p.id}`,
+        externalId: p.id,
+        name: p.name,
+        firstName,
+        lastName,
+        position: normalizePosition(p.position),
+        currentClub: GALATASARAY_TEAM_NAME,
+        currentClubId: resolvedTeamId,
+        nationality: 'Turkey',
+        age: p.age,
+        photo: p.photo,
+        aliases,
+      };
+    });
+
+    setCached(cacheKey, players, SQUAD_CACHE_TTL);
+    return players;
+  } catch {
+    return [];
+  }
 }
 
 // ─── Player Search & Resolution ─────────────────────────────────────────────
@@ -345,17 +405,16 @@ export async function searchPlayer(name: string): Promise<Player[]> {
   const cached = getCached<Player[]>(cacheKey);
   if (cached) return cached;
 
-  const currentYear = new Date().getFullYear();
-  // Try current year or previous year season
+  // Try current 2026 season or 2025 fallback
   let rawPlayers = await fetchFromApiFootball<ApiFootballPlayerItem>('players', {
     search: trimmed,
-    season: String(currentYear),
+    season: String(CURRENT_SEASON),
   });
 
   if (!rawPlayers || rawPlayers.length === 0) {
     rawPlayers = await fetchFromApiFootball<ApiFootballPlayerItem>('players', {
       search: trimmed,
-      season: String(currentYear - 1),
+      season: String(CURRENT_SEASON - 1),
     });
   }
 
@@ -400,10 +459,9 @@ export async function getPlayer(playerId: number): Promise<Player | null> {
   const cached = getCached<Player>(cacheKey);
   if (cached) return cached;
 
-  const currentYear = new Date().getFullYear();
   const results = await fetchFromApiFootball<ApiFootballPlayerItem>('players', {
     id: String(playerId),
-    season: String(currentYear),
+    season: String(CURRENT_SEASON),
   });
 
   if (!results || results.length === 0) return null;

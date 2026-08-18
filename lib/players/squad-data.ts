@@ -1,38 +1,9 @@
 import type { Player } from '@/types/transfer';
 
 /**
- * Verified current Galatasaray First Team Squad (2024-2025/2026 season).
- * Used to filter out existing squad members from incoming transfer rumors.
- */
-export const GALATASARAY_CURRENT_SQUAD_2025: string[] = [
-  'Fernando Muslera',
-  'Günay Güvenç',
-  'Batuhan Şen',
-  'Davinson Sánchez',
-  'Victor Nelsson',
-  'Abdülkerim Bardakcı',
-  'Kaan Ayhan',
-  'Ismail Jakobs',
-  'Elias Jelert',
-  'Metehan Baltacı',
-  'Lucas Torreira',
-  'Gabriel Sara',
-  'Kerem Demirbay',
-  'Berkan Kutlu',
-  'Eyüp Aydın',
-  'Dries Mertens',
-  'Hakim Ziyech',
-  'Roland Sallai',
-  'Barış Alper Yılmaz',
-  'Yunus Akgün',
-  'Yusuf Demir',
-  'Mauro Icardi',
-  'Victor Osimhen',
-  'Michy Batshuayi',
-];
-
-/**
- * Known transfer targets and candidates linked to Galatasaray in Turkish & International press.
+ * Known incoming transfer targets and candidates linked to Galatasaray in press coverage.
+ * Used for entity resolution and candidate player matching.
+ * Squad membership is NEVER hardcoded here; it is resolved dynamically from API-Football.
  */
 export const MASTER_PLAYERS_DATA: Player[] = [
   {
