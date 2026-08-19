@@ -16,6 +16,7 @@ import { calculateConfidence, calculateRumorScore, calculateTrend } from '@/lib/
 import {
   getGalatasaraySquadDetailed,
   CURRENT_SEASON,
+  GALATASARAY_DEFAULT_TEAM_ID,
   type SquadResolutionStatus,
 } from '@/lib/api-football';
 import { SerperSearchNewsAdapter } from '@/lib/news/search-adapter';
@@ -24,6 +25,7 @@ export const RUMOR_WINDOW_DAYS = 7;
 
 export type RejectionReason =
   | 'CURRENT_SQUAD'
+  | 'DATA_CONFLICT'
   | 'OUTGOING'
   | 'STALE'
   | 'LOW_CONFIDENCE'
@@ -44,6 +46,8 @@ export interface CandidateDiscoveryDiagnostic {
   resolvedPlayerId?: number | string;
   resolvedCanonicalName?: string;
   currentClub?: string;
+  currentClubId?: number;
+  currentClubSeason?: number;
   position?: string;
   status: 'VERIFIED' | 'UNRESOLVED';
 }
@@ -58,6 +62,10 @@ export interface AggregationResult {
     squadEndpoint: string;
     rawSquadResponseCount: number;
     paginationPages: number;
+    goalkeepersCount: number;
+    defendersCount: number;
+    midfieldersCount: number;
+    forwardsCount: number;
     fetchedArticles: number;
     transferRelevantArticles: number;
     uniqueArticles: number;
@@ -66,6 +74,7 @@ export interface AggregationResult {
     unresolvedCandidatesCount: number;
     activeIncomingRumors: number;
     activeOutgoingRumors: number;
+    dataConflictsCount: number;
     discoveredCandidates: CandidateDiscoveryDiagnostic[];
     rejected: RejectedRumorDiagnostic[];
   };
@@ -91,7 +100,7 @@ interface PlayerArticleBucket {
 
 /**
  * Check if a transfer rumor is an active, valid INCOMING transfer rumor
- * evaluated against complete authoritative squad data and fail-closed status.
+ * evaluated against complete authoritative squad data, ID comparison, and fail-closed status.
  */
 export function isActiveIncomingRumor(
   rumor: TransferRumor,
@@ -105,35 +114,60 @@ export function isActiveIncomingRumor(
     return {
       isActive: false,
       reason: 'SQUAD_UNAVAILABLE',
-      details: `Galatasaray squad verification status is ${squadStatus}.`,
+      details: `Galatasaray squad verification status is ${squadStatus}. External squad data unavailable or incomplete.`,
     };
   }
 
-  // 2. Authoritative External ID matching against current squad
-  if (typeof rumor.player.externalId === 'number' && currentSquadMap.has(rumor.player.externalId)) {
+  const externalId = typeof rumor.player.externalId === 'number' ? rumor.player.externalId : undefined;
+  const isInSquadList = externalId !== undefined && currentSquadMap.has(externalId);
+  const isGalatasarayClub =
+    rumor.player.currentClubId === GALATASARAY_DEFAULT_TEAM_ID ||
+    (typeof rumor.player.currentClub === 'string' &&
+      rumor.player.currentClub.toLowerCase().includes('galatasaray'));
+
+  // 2. Primary: Numeric external ID in current squad and currentClub is Galatasaray
+  if (isInSquadList && isGalatasarayClub) {
     return {
       isActive: false,
       reason: 'CURRENT_SQUAD',
-      details: `${rumor.player.name} (External ID: ${rumor.player.externalId}) is in current Galatasaray squad.`,
+      details: `${rumor.player.name} (External ID: ${externalId}) is in current Galatasaray squad.`,
     };
   }
 
-  // 3. Normalized Name & Club matching
+  // 3. Contradiction cross-check:
+  // If squad list does not contain player, but player's currentClub is Galatasaray:
+  if (!isInSquadList && isGalatasarayClub) {
+    return {
+      isActive: false,
+      reason: 'DATA_CONFLICT',
+      details: `Data conflict: ${rumor.player.name} (ID: ${externalId}) is not in squad list but currentClub is reported as ${rumor.player.currentClub} (ID: ${rumor.player.currentClubId}).`,
+    };
+  }
+
+  // If squad list contains player, but player's currentClub is reported as another club:
+  if (isInSquadList && !isGalatasarayClub) {
+    return {
+      isActive: false,
+      reason: 'DATA_CONFLICT',
+      details: `Data conflict: ${rumor.player.name} (ID: ${externalId}) is listed in Galatasaray squad but currentClub is reported as ${rumor.player.currentClub} (ID: ${rumor.player.currentClubId}).`,
+    };
+  }
+
+  // 4. Secondary fallback: Normalized Name & Aliases matching against current squad
   const playerNameLower = rumor.player.name.toLowerCase();
   const isCurrentPlayerByName =
     currentSquadNames.has(playerNameLower) ||
-    rumor.player.currentClub?.toLowerCase().includes('galatasaray') ||
-    rumor.player.aliases.some((alias) => currentSquadNames.has(alias.toLowerCase()));
+    rumor.player.aliases?.some((alias) => currentSquadNames.has(alias.toLowerCase()));
 
   if (isCurrentPlayerByName) {
     return {
       isActive: false,
       reason: 'CURRENT_SQUAD',
-      details: `${rumor.player.name} matches resolved current Galatasaray squad roster.`,
+      details: `${rumor.player.name} matches resolved current Galatasaray squad roster by name.`,
     };
   }
 
-  // 4. Recency window check
+  // 5. Recency window check
   const latestDate = rumor.latestNews[0]?.publishedAt
     ? new Date(rumor.latestNews[0].publishedAt).getTime()
     : 0;
@@ -148,7 +182,7 @@ export function isActiveIncomingRumor(
     };
   }
 
-  // 5. Confidence threshold check
+  // 6. Confidence threshold check
   if ((rumor.confidenceScore ?? 0) < 0.35) {
     return {
       isActive: false,
@@ -162,13 +196,14 @@ export function isActiveIncomingRumor(
 
 /**
  * Execute the complete live real data pipeline:
- * Article Ingestion -> Exact Text-Span NER -> API-Football Entity Resolution -> Complete Squad Filtering -> Evidence Binding -> Scoring
+ * Article Ingestion -> Exact Text-Span NER -> API-Football Entity Resolution -> ID-First Squad Filtering -> Evidence Binding -> Scoring
  */
 export async function aggregateLiveRumors(): Promise<AggregationResult> {
   const rejectedDiagnostics: RejectedRumorDiagnostic[] = [];
   const discoveredCandidates: CandidateDiscoveryDiagnostic[] = [];
 
-  // Step 1: Dynamically resolve complete official 2026-2027 Galatasaray squad
+  // Step 1: Invalidate stale registry and dynamically resolve complete official 2026-2027 Galatasaray squad
+  globalPlayerRegistry.clear();
   await globalPlayerRegistry.initializeSquad();
   const squadResolution = await getGalatasaraySquadDetailed(undefined, CURRENT_SEASON);
 
@@ -258,6 +293,8 @@ export async function aggregateLiveRumors(): Promise<AggregationResult> {
           resolvedPlayerId: resolved.externalId,
           resolvedCanonicalName: resolved.name,
           currentClub: resolved.currentClub,
+          currentClubId: resolved.currentClubId,
+          currentClubSeason: resolved.currentClubSeason,
           position: resolved.position,
           status: 'VERIFIED',
         });
@@ -405,6 +442,7 @@ export async function aggregateLiveRumors(): Promise<AggregationResult> {
   // Step 7: Apply Fail-Closed Active Incoming Rumor Filter
   const incomingRumors: TransferRumor[] = [];
   let outgoingCount = 0;
+  let dataConflictsCount = 0;
 
   for (const rumor of allRumors) {
     const eligibility = isActiveIncomingRumor(
@@ -420,6 +458,8 @@ export async function aggregateLiveRumors(): Promise<AggregationResult> {
     } else {
       if (eligibility.reason === 'CURRENT_SQUAD') {
         outgoingCount++;
+      } else if (eligibility.reason === 'DATA_CONFLICT') {
+        dataConflictsCount++;
       }
       rejectedDiagnostics.push({
         playerName: rumor.player.name,
@@ -453,6 +493,10 @@ export async function aggregateLiveRumors(): Promise<AggregationResult> {
       squadEndpoint: squadResolution.endpoint,
       rawSquadResponseCount: squadResolution.rawResponseCount,
       paginationPages: squadResolution.paginationPages,
+      goalkeepersCount: squadResolution.goalkeepersCount,
+      defendersCount: squadResolution.defendersCount,
+      midfieldersCount: squadResolution.midfieldersCount,
+      forwardsCount: squadResolution.forwardsCount,
       fetchedArticles: activeNewsItems.length,
       transferRelevantArticles: relevantRawItems.length,
       uniqueArticles: uniqueArticles.length,
@@ -461,6 +505,7 @@ export async function aggregateLiveRumors(): Promise<AggregationResult> {
       unresolvedCandidatesCount,
       activeIncomingRumors: incomingRumors.length,
       activeOutgoingRumors: outgoingCount,
+      dataConflictsCount,
       discoveredCandidates,
       rejected: rejectedDiagnostics,
     },

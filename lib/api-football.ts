@@ -6,6 +6,7 @@ const DEFAULT_TIMEOUT_MS = 8000;
 // Cache TTLs in milliseconds
 const SQUAD_CACHE_TTL = 1000 * 60 * 60 * 2; // 2 hours
 const PLAYER_SEARCH_CACHE_TTL = 1000 * 60 * 60 * 4; // 4 hours
+const CURRENT_CLUB_CACHE_TTL = 1000 * 60 * 60 * 1; // 1 hour
 const TEAM_LOOKUP_CACHE_TTL = 1000 * 60 * 60 * 24; // 24 hours
 
 // Current active competition season context (2026-2027 season)
@@ -26,6 +27,10 @@ export interface SquadResolutionResult {
   rawResponseCount: number;
   normalizedSquadCount: number;
   paginationPages: number;
+  goalkeepersCount: number;
+  defendersCount: number;
+  midfieldersCount: number;
+  forwardsCount: number;
   fetchedAt: string;
   cacheAgeMs: number;
   mismatchReport?: string;
@@ -106,6 +111,12 @@ interface ApiFootballPlayerItem {
       id: number;
       name: string;
       logo?: string;
+    };
+    league?: {
+      id: number;
+      name: string;
+      country?: string;
+      season?: number;
     };
     games: {
       position: string;
@@ -343,43 +354,7 @@ export async function resolveGalatasarayTeam(): Promise<{ id: number; name: stri
   }
 }
 
-// ─── Complete Authoritative 2026-2027 Squad Reference (Sanity & Dev Mode) ───
-
-interface DevSquadPlayerDef {
-  externalId: number;
-  name: string;
-  position: Position;
-  nationality: string;
-}
-
-export const OFFICIAL_GALATASARAY_2026_SQUAD: DevSquadPlayerDef[] = [
-  { externalId: 641, name: 'Fernando Muslera', position: 'GOALKEEPER', nationality: 'Uruguay' },
-  { externalId: 2021, name: 'Günay Güvenç', position: 'GOALKEEPER', nationality: 'Turkey' },
-  { externalId: 154210, name: 'Batuhan Şen', position: 'GOALKEEPER', nationality: 'Turkey' },
-  { externalId: 635, name: 'Davinson Sánchez', position: 'DEFENDER', nationality: 'Colombia' },
-  { externalId: 2512, name: 'Victor Nelsson', position: 'DEFENDER', nationality: 'Denmark' },
-  { externalId: 2028, name: 'Abdülkerim Bardakcı', position: 'DEFENDER', nationality: 'Turkey' },
-  { externalId: 1690, name: 'Kaan Ayhan', position: 'DEFENDER', nationality: 'Turkey' },
-  { externalId: 1388, name: 'Ismail Jakobs', position: 'DEFENDER', nationality: 'Senegal' },
-  { externalId: 284105, name: 'Elias Jelert', position: 'DEFENDER', nationality: 'Denmark' },
-  { externalId: 154215, name: 'Metehan Baltacı', position: 'DEFENDER', nationality: 'Turkey' },
-  { externalId: 1475, name: 'Lucas Torreira', position: 'MIDFIELDER', nationality: 'Uruguay' },
-  { externalId: 3582, name: 'Gabriel Sara', position: 'MIDFIELDER', nationality: 'Brazil' },
-  { externalId: 1685, name: 'Kerem Demirbay', position: 'MIDFIELDER', nationality: 'Germany' },
-  { externalId: 2045, name: 'Berkan Kutlu', position: 'MIDFIELDER', nationality: 'Turkey' },
-  { externalId: 312500, name: 'Eyüp Aydın', position: 'MIDFIELDER', nationality: 'Germany' },
-  { externalId: 1251, name: 'Dries Mertens', position: 'MIDFIELDER', nationality: 'Belgium' },
-  { externalId: 855, name: 'Hakim Ziyech', position: 'MIDFIELDER', nationality: 'Morocco' },
-  { externalId: 1852, name: 'Roland Sallai', position: 'MIDFIELDER', nationality: 'Hungary' },
-  { externalId: 2062, name: 'Barış Alper Yılmaz', position: 'FORWARD', nationality: 'Turkey' },
-  { externalId: 2068, name: 'Yunus Akgün', position: 'FORWARD', nationality: 'Turkey' },
-  { externalId: 4120, name: 'Yusuf Demir', position: 'FORWARD', nationality: 'Austria' },
-  { externalId: 850, name: 'Mauro Icardi', position: 'FORWARD', nationality: 'Argentina' },
-  { externalId: 339, name: 'Victor Osimhen', position: 'FORWARD', nationality: 'Nigeria' },
-  { externalId: 2289, name: 'Michy Batshuayi', position: 'FORWARD', nationality: 'Belgium' },
-];
-
-// ─── Fail-Closed Dynamic Squad Resolution with Full Pagination ──────────────
+// ─── Fail-Closed Dynamic Squad Resolution with Full Completeness Checks ──────
 
 export async function getGalatasaraySquadDetailed(
   teamId?: number,
@@ -396,71 +371,31 @@ export async function getGalatasaraySquadDetailed(
     };
   }
 
-  // If API key is missing: in development mode use complete verified 2026 reference squad
+  // Fail-closed if API key is not configured: No synthetic squad fallback
   if (!process.env.API_FOOTBALL_KEY || process.env.API_FOOTBALL_KEY.trim() === '') {
-    if (process.env.NODE_ENV === 'development') {
-      const devSquad: Player[] = OFFICIAL_GALATASARAY_2026_SQUAD.map((p) => {
-        const parts = p.name.split(' ');
-        const aliases = [p.name];
-        if (parts.length === 3) {
-          aliases.push(`${parts[0]} ${parts[1]}`);
-          aliases.push(parts[2]);
-        } else if (parts.length === 2) {
-          aliases.push(parts[1]);
-        }
-
-        return {
-          id: `gs-${p.externalId}`,
-          externalId: p.externalId,
-          name: p.name,
-          firstName: parts[0],
-          lastName: parts.slice(1).join(' '),
-          position: p.position,
-          currentClub: GALATASARAY_TEAM_NAME,
-          currentClubId: resolvedTeamId,
-          nationality: p.nationality,
-          aliases,
-          entityResolutionConfidence: 1.0,
-          lastResolvedAt: new Date().toISOString(),
-        };
-      });
-
-      const result: SquadResolutionResult = {
-        status: 'VERIFIED',
-        season: targetSeason,
-        teamId: resolvedTeamId,
-        endpoint: 'official_galatasaray_2026_squad_reference',
-        squad: devSquad,
-        rawResponseCount: devSquad.length,
-        normalizedSquadCount: devSquad.length,
-        paginationPages: 1,
-        fetchedAt: new Date().toISOString(),
-        cacheAgeMs: 0,
-      };
-
-      setCached(cacheKey, result, SQUAD_CACHE_TTL);
-      return result;
-    }
-
     return {
       status: 'UNAVAILABLE',
       season: targetSeason,
       teamId: resolvedTeamId,
-      endpoint: 'none',
+      endpoint: `${API_FOOTBALL_BASE_URL}/players/squads?team=${resolvedTeamId}`,
       squad: [],
       rawResponseCount: 0,
       normalizedSquadCount: 0,
       paginationPages: 0,
+      goalkeepersCount: 0,
+      defendersCount: 0,
+      midfieldersCount: 0,
+      forwardsCount: 0,
       fetchedAt: new Date().toISOString(),
       cacheAgeMs: 0,
-      mismatchReport: 'API_FOOTBALL_KEY is not configured in production environment.',
+      mismatchReport: 'API_FOOTBALL_KEY is not configured in environment. Failing closed without synthetic squad.',
     };
   }
 
-  // When API key is available, query live paginated API-Football endpoints
+  // Query live paginated API-Football endpoints
   try {
     let playersData: ApiFootballSquadPlayer[] = [];
-    let endpointUsed = 'players/squads';
+    let endpointUsed = `${API_FOOTBALL_BASE_URL}/players/squads?team=${resolvedTeamId}`;
     let totalPages = 1;
 
     // 1. Try players/squads endpoint
@@ -474,7 +409,7 @@ export async function getGalatasaraySquadDetailed(
 
     // 2. If squad endpoint returned fewer than 18 players, fetch paginated season players endpoint
     if (playersData.length < 18) {
-      endpointUsed = 'players';
+      endpointUsed = `${API_FOOTBALL_BASE_URL}/players?team=${resolvedTeamId}&season=${targetSeason}`;
       const firstPage = await fetchFromApiFootballEnvelope<ApiFootballPlayerItem>('players', {
         team: String(resolvedTeamId),
         season: String(targetSeason),
@@ -507,8 +442,18 @@ export async function getGalatasaraySquadDetailed(
       }
     }
 
-    // 3. Squad Sanity Check
-    const normalizedSquad: Player[] = playersData.map((p) => {
+    // 3. Deduplicate players by numeric ID
+    const uniquePlayersMap = new Map<number, ApiFootballSquadPlayer>();
+    for (const p of playersData) {
+      if (typeof p.id === 'number' && !uniquePlayersMap.has(p.id)) {
+        uniquePlayersMap.set(p.id, p);
+      }
+    }
+
+    const uniquePlayersList = Array.from(uniquePlayersMap.values());
+
+    // 4. Normalize players
+    const normalizedSquad: Player[] = uniquePlayersList.map((p) => {
       const nameParts = p.name.trim().split(/\s+/);
       const firstName = nameParts.length > 1 ? nameParts[0] : '';
       const lastName = nameParts.length > 1 ? nameParts.slice(1).join(' ') : nameParts[0];
@@ -531,6 +476,8 @@ export async function getGalatasaraySquadDetailed(
         position: normalizePosition(p.position),
         currentClub: GALATASARAY_TEAM_NAME,
         currentClubId: resolvedTeamId,
+        currentClubSeason: targetSeason,
+        currentClubResolvedAt: new Date().toISOString(),
         nationality: 'Turkey',
         age: p.age,
         photo: p.photo,
@@ -540,17 +487,24 @@ export async function getGalatasaraySquadDetailed(
       };
     });
 
-    const hasGk = normalizedSquad.some((p) => p.position === 'GOALKEEPER');
-    const hasDef = normalizedSquad.some((p) => p.position === 'DEFENDER');
-    const hasMid = normalizedSquad.some((p) => p.position === 'MIDFIELDER');
-    const hasFwd = normalizedSquad.some((p) => p.position === 'FORWARD');
+    const goalkeepersCount = normalizedSquad.filter((p) => p.position === 'GOALKEEPER').length;
+    const defendersCount = normalizedSquad.filter((p) => p.position === 'DEFENDER').length;
+    const midfieldersCount = normalizedSquad.filter((p) => p.position === 'MIDFIELDER').length;
+    const forwardsCount = normalizedSquad.filter((p) => p.position === 'FORWARD').length;
 
     let status: SquadResolutionStatus = 'VERIFIED';
     let mismatchReport: string | undefined;
 
-    if (normalizedSquad.length < 18 || !hasGk || !hasDef || !hasMid || !hasFwd) {
+    // Strict completeness checks: at least 18 players, all positions represented
+    if (
+      normalizedSquad.length < 18 ||
+      goalkeepersCount === 0 ||
+      defendersCount === 0 ||
+      midfieldersCount === 0 ||
+      forwardsCount === 0
+    ) {
       status = 'INVALID';
-      mismatchReport = `Squad failed sanity validation: size=${normalizedSquad.length}, GK=${hasGk}, DEF=${hasDef}, MID=${hasMid}, FWD=${hasFwd}`;
+      mismatchReport = `Squad failed completeness checks: size=${normalizedSquad.length}, GK=${goalkeepersCount}, DEF=${defendersCount}, MID=${midfieldersCount}, FWD=${forwardsCount}`;
     }
 
     const result: SquadResolutionResult = {
@@ -562,6 +516,10 @@ export async function getGalatasaraySquadDetailed(
       rawResponseCount: playersData.length,
       normalizedSquadCount: normalizedSquad.length,
       paginationPages: totalPages,
+      goalkeepersCount,
+      defendersCount,
+      midfieldersCount,
+      forwardsCount,
       fetchedAt: new Date().toISOString(),
       cacheAgeMs: 0,
       mismatchReport,
@@ -575,11 +533,15 @@ export async function getGalatasaraySquadDetailed(
       status: 'UNAVAILABLE',
       season: targetSeason,
       teamId: resolvedTeamId,
-      endpoint: 'error',
+      endpoint: `${API_FOOTBALL_BASE_URL}/players/squads?team=${resolvedTeamId}`,
       squad: [],
       rawResponseCount: 0,
       normalizedSquadCount: 0,
       paginationPages: 0,
+      goalkeepersCount: 0,
+      defendersCount: 0,
+      midfieldersCount: 0,
+      forwardsCount: 0,
       fetchedAt: new Date().toISOString(),
       cacheAgeMs: 0,
       mismatchReport: errorMsg,
@@ -595,427 +557,172 @@ export async function getGalatasaraySquad(
   return result.squad;
 }
 
-// ─── Authoritative Real Footballer Directory (API-Sports Official IDs) ──────
+// ─── Authoritative Player Identity & Season-Aware Current Club Resolution ───
 
-export interface AuthoritativePlayerRecord {
-  externalId: number;
-  name: string;
-  firstName: string;
-  lastName: string;
+export interface ResolvedClubInfo {
+  clubName: string;
+  clubId?: number;
+  season: number;
   position: Position;
-  currentClub: string;
-  currentClubId: number;
+  resolvedAt: string;
+}
+
+/**
+ * Resolve player basic identity from API-Football search endpoint.
+ */
+export async function resolvePlayerIdentity(
+  query: string,
+): Promise<{
+  id: number;
+  name: string;
+  firstname: string;
+  lastname: string;
   nationality: string;
   age?: number;
   photo?: string;
-  aliases: string[];
+} | null> {
+  const trimmed = query.trim();
+  if (!trimmed || trimmed.length < 3) return null;
+
+  if (!process.env.API_FOOTBALL_KEY || process.env.API_FOOTBALL_KEY.trim() === '') {
+    return null;
+  }
+
+  const cacheKey = `player_identity:${trimmed.toLowerCase()}`;
+  const cached = getCached<{
+    id: number;
+    name: string;
+    firstname: string;
+    lastname: string;
+    nationality: string;
+    age?: number;
+    photo?: string;
+  }>(cacheKey);
+  if (cached) return cached;
+
+  try {
+    const results = await fetchFromApiFootball<ApiFootballPlayerItem>('players', {
+      search: trimmed,
+    });
+
+    if (!results || results.length === 0) return null;
+
+    const first = results[0].player;
+    const identity = {
+      id: first.id,
+      name: first.name,
+      firstname: first.firstname || '',
+      lastname: first.lastname || first.name,
+      nationality: first.nationality || '',
+      age: first.age,
+      photo: first.photo,
+    };
+
+    setCached(cacheKey, identity, PLAYER_SEARCH_CACHE_TTL);
+    return identity;
+  } catch {
+    return null;
+  }
 }
 
-export const AUTHORITATIVE_PLAYERS: AuthoritativePlayerRecord[] = [
-  {
-    externalId: 382901,
-    name: 'Aleksey Batrakov',
-    firstName: 'Aleksey',
-    lastName: 'Batrakov',
-    position: 'MIDFIELDER',
-    currentClub: 'Lokomotiv Moscow',
-    currentClubId: 543,
-    nationality: 'Russia',
-    age: 19,
-    aliases: ['Batrakov', 'Aleksey Batrakov', 'A. Batrakov'],
-  },
-  {
-    externalId: 2843,
-    name: 'Rafael Leão',
-    firstName: 'Rafael',
-    lastName: 'Leão',
-    position: 'FORWARD',
-    currentClub: 'AC Milan',
-    currentClubId: 489,
-    nationality: 'Portugal',
-    age: 25,
-    aliases: ['Leao', 'Rafael Leao', 'Rafael Leão', 'R. Leao'],
-  },
-  {
-    externalId: 1456,
-    name: 'Gabriel Martinelli',
-    firstName: 'Gabriel',
-    lastName: 'Martinelli',
-    position: 'FORWARD',
-    currentClub: 'Arsenal',
-    currentClubId: 42,
-    nationality: 'Brazil',
-    age: 23,
-    aliases: ['Martinelli', 'Gabriel Martinelli', 'G. Martinelli'],
-  },
-  {
-    externalId: 326714,
-    name: 'Can Uzun',
-    firstName: 'Can',
-    lastName: 'Uzun',
-    position: 'MIDFIELDER',
-    currentClub: 'Eintracht Frankfurt',
-    currentClubId: 169,
-    nationality: 'Turkey',
-    age: 19,
-    aliases: ['Can Uzun', 'C. Uzun'],
-  },
-  {
-    externalId: 1485,
-    name: 'Bruno Fernandes',
-    firstName: 'Bruno',
-    lastName: 'Fernandes',
-    position: 'MIDFIELDER',
-    currentClub: 'Manchester United',
-    currentClubId: 33,
-    nationality: 'Portugal',
-    age: 30,
-    aliases: ['Bruno Fernandes', 'B. Fernandes'],
-  },
-  {
-    externalId: 124578,
-    name: 'Wilfried Singo',
-    firstName: 'Wilfried',
-    lastName: 'Singo',
-    position: 'DEFENDER',
-    currentClub: 'AS Monaco',
-    currentClubId: 91,
-    nationality: 'Ivory Coast',
-    age: 24,
-    aliases: ['Singo', 'Wilfried Singo', 'W. Singo'],
-  },
-  {
-    externalId: 899,
-    name: 'Marcus Rashford',
-    firstName: 'Marcus',
-    lastName: 'Rashford',
-    position: 'FORWARD',
-    currentClub: 'Manchester United',
-    currentClubId: 33,
-    nationality: 'England',
-    age: 27,
-    aliases: ['Rashford', 'Marcus Rashford', 'M. Rashford'],
-  },
-  {
-    externalId: 161928,
-    name: 'Lesley Ugochukwu',
-    firstName: 'Lesley',
-    lastName: 'Ugochukwu',
-    position: 'MIDFIELDER',
-    currentClub: 'Southampton',
-    currentClubId: 41,
-    nationality: 'France',
-    age: 20,
-    aliases: ['Ugochukwu', 'Lesley Ugochukwu', 'L. Ugochukwu'],
-  },
-  {
-    externalId: 9812,
-    name: 'Ethan Nwaneri',
-    firstName: 'Ethan',
-    lastName: 'Nwaneri',
-    position: 'MIDFIELDER',
-    currentClub: 'Arsenal',
-    currentClubId: 42,
-    nationality: 'England',
-    age: 17,
-    aliases: ['Nwaneri', 'Ethan Nwaneri', 'E. Nwaneri'],
-  },
-  {
-    externalId: 633,
-    name: 'Leroy Sané',
-    firstName: 'Leroy',
-    lastName: 'Sané',
-    position: 'FORWARD',
-    currentClub: 'Bayern Munich',
-    currentClubId: 157,
-    nationality: 'Germany',
-    age: 29,
-    aliases: ['Sane', 'Leroy Sane', 'Leroy Sané', 'L. Sane'],
-  },
-  {
-    externalId: 401294,
-    name: 'Matviy Ponomarenko',
-    firstName: 'Matviy',
-    lastName: 'Ponomarenko',
-    position: 'FORWARD',
-    currentClub: 'Dynamo Kyiv',
-    currentClubId: 558,
-    nationality: 'Ukraine',
-    age: 19,
-    aliases: ['Ponomarenko', 'Matviy Ponomarenko', 'M. Ponomarenko'],
-  },
-  {
-    externalId: 2471,
-    name: 'Jhon Lucumí',
-    firstName: 'Jhon',
-    lastName: 'Lucumí',
-    position: 'DEFENDER',
-    currentClub: 'Bologna',
-    currentClubId: 500,
-    nationality: 'Colombia',
-    age: 26,
-    aliases: ['Lucumi', 'Jhon Lucumi', 'Jhon Lucumí', 'J. Lucumi'],
-  },
-  {
-    externalId: 1874,
-    name: 'Ramy Bensebaini',
-    firstName: 'Ramy',
-    lastName: 'Bensebaini',
-    position: 'DEFENDER',
-    currentClub: 'Borussia Dortmund',
-    currentClubId: 165,
-    nationality: 'Algeria',
-    age: 29,
-    aliases: ['Bensebaini', 'Ramy Bensebaini', 'R. Bensebaini'],
-  },
-  {
-    externalId: 341829,
-    name: 'Malick Fofana',
-    firstName: 'Malick',
-    lastName: 'Fofana',
-    position: 'FORWARD',
-    currentClub: 'Lyon',
-    currentClubId: 80,
-    nationality: 'Belgium',
-    age: 19,
-    aliases: ['Fofana', 'Malick Fofana', 'M. Fofana'],
-  },
-  {
-    externalId: 184000,
-    name: 'Abdessamed Ezzalzouli',
-    firstName: 'Abdessamed',
-    lastName: 'Ezzalzouli',
-    position: 'FORWARD',
-    currentClub: 'Real Betis',
-    currentClubId: 543,
-    nationality: 'Morocco',
-    age: 23,
-    aliases: ['Ez Abde', 'Abdessamed Ezzalzouli', 'Ezzalzouli', 'Abde'],
-  },
-  {
-    externalId: 6715,
-    name: 'Alexis Mac Allister',
-    firstName: 'Alexis',
-    lastName: 'Mac Allister',
-    position: 'MIDFIELDER',
-    currentClub: 'Liverpool',
-    currentClubId: 40,
-    nationality: 'Argentina',
-    age: 26,
-    aliases: ['Mac Allister', 'Alexis Mac Allister', 'A. Mac Allister'],
-  },
-  {
-    externalId: 324901,
-    name: 'Mathys Tel',
-    firstName: 'Mathys',
-    lastName: 'Tel',
-    position: 'FORWARD',
-    currentClub: 'Bayern Munich',
-    currentClubId: 157,
-    nationality: 'France',
-    age: 19,
-    aliases: ['Tel', 'Mathys Tel', 'M. Tel'],
-  },
-  {
-    externalId: 419201,
-    name: 'Gabriel Mec',
-    firstName: 'Gabriel',
-    lastName: 'Mec',
-    position: 'MIDFIELDER',
-    currentClub: 'Grêmio',
-    currentClubId: 130,
-    nationality: 'Brazil',
-    age: 17,
-    aliases: ['Gabriel Mec', 'G. Mec'],
-  },
-  {
-    externalId: 284102,
-    name: 'Renato Veiga',
-    firstName: 'Renato',
-    lastName: 'Veiga',
-    position: 'DEFENDER',
-    currentClub: 'Chelsea',
-    currentClubId: 49,
-    nationality: 'Portugal',
-    age: 21,
-    aliases: ['Renato Veiga', 'R. Veiga'],
-  },
-  {
-    externalId: 1205,
-    name: 'Paulo Dybala',
-    firstName: 'Paulo',
-    lastName: 'Dybala',
-    position: 'FORWARD',
-    currentClub: 'AS Roma',
-    currentClubId: 497,
-    nationality: 'Argentina',
-    age: 31,
-    aliases: ['Dybala', 'Paulo Dybala', 'P. Dybala'],
-  },
-  {
-    externalId: 2314,
-    name: 'Mario Hermoso',
-    firstName: 'Mario',
-    lastName: 'Hermoso',
-    position: 'DEFENDER',
-    currentClub: 'AS Roma',
-    currentClubId: 497,
-    nationality: 'Spain',
-    age: 29,
-    aliases: ['Hermoso', 'Mario Hermoso', 'M. Hermoso'],
-  },
-  {
-    externalId: 1980,
-    name: 'Uğurcan Çakır',
-    firstName: 'Uğurcan',
-    lastName: 'Çakır',
-    position: 'GOALKEEPER',
-    currentClub: 'Trabzonspor',
-    currentClubId: 648,
-    nationality: 'Turkey',
-    age: 28,
-    aliases: ['Uğurcan Çakır', 'Ugurcan Cakir', 'Uğurcan'],
-  },
-  {
-    externalId: 1043,
-    name: 'Adrien Rabiot',
-    firstName: 'Adrien',
-    lastName: 'Rabiot',
-    position: 'MIDFIELDER',
-    currentClub: 'Marseille',
-    currentClubId: 81,
-    nationality: 'France',
-    age: 29,
-    aliases: ['Rabiot', 'Adrien Rabiot', 'A. Rabiot'],
-  },
-  {
-    externalId: 629,
-    name: 'Bernardo Silva',
-    firstName: 'Bernardo',
-    lastName: 'Silva',
-    position: 'MIDFIELDER',
-    currentClub: 'Manchester City',
-    currentClubId: 50,
-    nationality: 'Portugal',
-    age: 30,
-    aliases: ['Bernardo Silva', 'B. Silva'],
-  },
-  {
-    externalId: 1102,
-    name: 'Milan Škriniar',
-    firstName: 'Milan',
-    lastName: 'Škriniar',
-    position: 'DEFENDER',
-    currentClub: 'PSG',
-    currentClubId: 85,
-    nationality: 'Slovakia',
-    age: 29,
-    aliases: ['Skriniar', 'Milan Skriniar', 'Milan Škriniar', 'M. Skriniar'],
-  },
-  {
-    externalId: 6721,
-    name: 'Jhon Arias',
-    firstName: 'Jhon',
-    lastName: 'Arias',
-    position: 'MIDFIELDER',
-    currentClub: 'Fluminense',
-    currentClubId: 124,
-    nationality: 'Colombia',
-    age: 27,
-    aliases: ['Arias', 'Jhon Arias', 'J. Arias'],
-  },
-];
+/**
+ * Resolve current club and season membership for a given player ID in a specific season context.
+ */
+export async function resolveCurrentClub(
+  playerId: number,
+  targetSeason: number = CURRENT_SEASON,
+): Promise<ResolvedClubInfo | null> {
+  if (!process.env.API_FOOTBALL_KEY || process.env.API_FOOTBALL_KEY.trim() === '') {
+    return null;
+  }
 
-// ─── Authoritative Player Search ────────────────────────────────────────────
+  const cacheKey = `player_club:${playerId}:${targetSeason}`;
+  const cached = getCached<ResolvedClubInfo>(cacheKey);
+  if (cached) return cached;
 
-export async function searchPlayer(name: string): Promise<Player[]> {
+  try {
+    // Query API-Football player record specifically for target season
+    let playerRecords = await fetchFromApiFootball<ApiFootballPlayerItem>('players', {
+      id: String(playerId),
+      season: String(targetSeason),
+    });
+
+    let effectiveSeason = targetSeason;
+
+    // If no records for current season, check previous season (targetSeason - 1)
+    if (!playerRecords || playerRecords.length === 0 || !playerRecords[0].statistics || playerRecords[0].statistics.length === 0) {
+      playerRecords = await fetchFromApiFootball<ApiFootballPlayerItem>('players', {
+        id: String(playerId),
+        season: String(targetSeason - 1),
+      });
+      effectiveSeason = targetSeason - 1;
+    }
+
+    if (!playerRecords || playerRecords.length === 0) return null;
+
+    const item = playerRecords[0];
+    const stats = item.statistics || [];
+    if (stats.length === 0) return null;
+
+    // Select the most relevant/latest statistics entry
+    const primaryStat = stats[0];
+    const clubInfo: ResolvedClubInfo = {
+      clubName: primaryStat.team.name,
+      clubId: primaryStat.team.id,
+      season: effectiveSeason,
+      position: normalizePosition(primaryStat.games?.position),
+      resolvedAt: new Date().toISOString(),
+    };
+
+    setCached(cacheKey, clubInfo, CURRENT_CLUB_CACHE_TTL);
+    return clubInfo;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Authoritative player search combining identity resolution and season-aware club lookup.
+ */
+export async function searchPlayer(
+  name: string,
+  targetSeason: number = CURRENT_SEASON,
+): Promise<Player[]> {
   const trimmed = name.trim();
   if (!trimmed || trimmed.length < 3) return [];
 
-  const cacheKey = `player_search:${trimmed.toLowerCase()}`;
-  const cached = getCached<Player[]>(cacheKey);
-  if (cached) return cached;
+  const identity = await resolvePlayerIdentity(trimmed);
+  if (!identity) return [];
 
-  // When API key is available, query live API-Football
-  if (process.env.API_FOOTBALL_KEY && process.env.API_FOOTBALL_KEY.trim() !== '') {
-    try {
-      let rawPlayers = await fetchFromApiFootball<ApiFootballPlayerItem>('players', {
-        search: trimmed,
-        season: String(CURRENT_SEASON),
-      });
+  const clubInfo = await resolveCurrentClub(identity.id, targetSeason);
 
-      if (!rawPlayers || rawPlayers.length === 0) {
-        rawPlayers = await fetchFromApiFootball<ApiFootballPlayerItem>('players', {
-          search: trimmed,
-          season: String(CURRENT_SEASON - 1),
-        });
-      }
-
-      const players: Player[] = rawPlayers.map((item) => {
-        const p = item.player;
-        const latestStats = item.statistics?.[0];
-        const club = latestStats?.team?.name || 'Unknown Club';
-        const clubId = latestStats?.team?.id;
-        const pos = normalizePosition(latestStats?.games?.position);
-
-        const aliases: string[] = [p.name];
-        if (p.lastname && p.lastname !== p.name) {
-          aliases.push(p.lastname);
-        }
-        if (p.firstname && p.lastname) {
-          aliases.push(`${p.firstname} ${p.lastname}`);
-          aliases.push(`${p.firstname[0]}. ${p.lastname}`);
-        }
-
-        return {
-          id: `api-football-${p.id}`,
-          externalId: p.id,
-          name: p.name,
-          firstName: p.firstname || '',
-          lastName: p.lastname || p.name,
-          position: pos,
-          currentClub: club,
-          currentClubId: clubId,
-          nationality: p.nationality || '',
-          age: p.age,
-          photo: p.photo,
-          aliases,
-          entityResolutionConfidence: 1.0,
-          lastResolvedAt: new Date().toISOString(),
-        };
-      });
-
-      setCached(cacheKey, players, PLAYER_SEARCH_CACHE_TTL);
-      return players;
-    } catch {
-      // Fallback to authoritative directory
-    }
+  const aliases: string[] = [identity.name];
+  if (identity.lastname && identity.lastname !== identity.name) {
+    aliases.push(identity.lastname);
+  }
+  if (identity.firstname && identity.lastname) {
+    aliases.push(`${identity.firstname} ${identity.lastname}`);
+    aliases.push(`${identity.firstname[0]}. ${identity.lastname}`);
   }
 
-  // Lookup in Authoritative Directory
-  const lowerSearch = trimmed.toLowerCase();
-  const matched = AUTHORITATIVE_PLAYERS.filter(
-    (p) =>
-      p.name.toLowerCase().includes(lowerSearch) ||
-      p.aliases.some((a) => a.toLowerCase().includes(lowerSearch)),
-  );
-
-  const players: Player[] = matched.map((p) => ({
-    id: `api-football-${p.externalId}`,
-    externalId: p.externalId,
-    name: p.name,
-    firstName: p.firstName,
-    lastName: p.lastName,
-    position: p.position,
-    currentClub: p.currentClub,
-    currentClubId: p.currentClubId,
-    nationality: p.nationality,
-    age: p.age,
-    aliases: p.aliases,
+  const resolvedPlayer: Player = {
+    id: `api-football-${identity.id}`,
+    externalId: identity.id,
+    name: identity.name,
+    firstName: identity.firstname,
+    lastName: identity.lastname,
+    position: clubInfo?.position || 'MIDFIELDER',
+    currentClub: clubInfo?.clubName || 'Unknown Club',
+    currentClubId: clubInfo?.clubId,
+    currentClubSeason: clubInfo?.season || targetSeason,
+    currentClubResolvedAt: clubInfo?.resolvedAt || new Date().toISOString(),
+    nationality: identity.nationality,
+    age: identity.age,
+    photo: identity.photo,
+    aliases,
     entityResolutionConfidence: 1.0,
     lastResolvedAt: new Date().toISOString(),
-  }));
+  };
 
-  setCached(cacheKey, players, PLAYER_SEARCH_CACHE_TTL);
-  return players;
+  return [resolvedPlayer];
 }

@@ -13,6 +13,15 @@ export class PlayerRegistry {
   private isInitialized = false;
 
   /**
+   * Reset registry cache.
+   */
+  clear(): void {
+    this.playersById.clear();
+    this.playersByExternalId.clear();
+    this.isInitialized = false;
+  }
+
+  /**
    * Register a single verified player into the dynamic registry.
    */
   registerPlayer(player: Player, discoverySource: string = 'API-Football'): RegisteredPlayer {
@@ -94,7 +103,7 @@ export class PlayerRegistry {
 
     // 2. Query API-Football player search dynamically
     try {
-      const candidates = await searchPlayer(trimmed);
+      const candidates = await searchPlayer(trimmed, CURRENT_SEASON);
       if (candidates && candidates.length > 0) {
         const bestMatch = candidates[0];
         return this.registerPlayer(bestMatch, 'API-Football Search');

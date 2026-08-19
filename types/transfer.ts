@@ -22,6 +22,8 @@ export interface Player {
   position: Position;
   currentClub: string;
   currentClubId?: number;
+  currentClubSeason?: number;
+  currentClubResolvedAt?: string;
   nationality: string;
   age?: number;
   photo?: string;
@@ -29,6 +31,7 @@ export interface Player {
   entityResolutionConfidence?: number;
   lastResolvedAt?: string;
 }
+
 
 // ─── Candidate Text Span & NER ──────────────────────────────────────────────
 
