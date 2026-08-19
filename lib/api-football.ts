@@ -1,5 +1,5 @@
 import type { Player, Position } from '@/types/transfer';
-import { normalizeText, scoreCandidateIdentity } from '@/lib/players/matcher';
+import { normalizeText, scoreCandidateIdentity, AMBIGUOUS_SURNAMES } from '@/lib/players/matcher';
 
 const API_FOOTBALL_BASE_URL = 'https://v3.football.api-sports.io';
 const DEFAULT_TIMEOUT_MS = 8000;
@@ -683,8 +683,7 @@ export interface ResolvedPlayerIdentity {
 
 /**
  * Resolve player basic identity from API-Football.
- * Queries `players/profiles?search=...` (or fallback `players?search=...&season=...`)
- * and scores candidate results deterministically.
+ * Queries `/players?search=...` (without season lock) and scores candidate results deterministically.
  */
 export async function resolvePlayerIdentity(
   candidateName: string,
@@ -696,14 +695,17 @@ export async function resolvePlayerIdentity(
     return null;
   }
 
-  const cacheKey = `player_identity:${trimmed.toLowerCase()}`;
+  const normCandidate = normalizeText(trimmed);
+  if (normCandidate.length < 3) return null;
+
+  const cacheKey = `player_identity:${normCandidate}`;
   const cached = getCached<ResolvedPlayerIdentity>(cacheKey);
   if (cached) return cached;
 
   const trace: PlayerResolutionTrace = {
     candidateName: trimmed,
-    normalizedCandidateName: normalizeText(trimmed),
-    requestedEndpoint: 'players/profiles',
+    normalizedCandidateName: normCandidate,
+    requestedEndpoint: 'players',
     queryParameters: { search: trimmed },
     httpStatus: 200,
     responseCount: 0,
@@ -713,30 +715,31 @@ export async function resolvePlayerIdentity(
   try {
     let candidateItems: ApiFootballPlayerItem[] = [];
 
-    // Strategy 1: Dedicated `/players/profiles?search=...` (Does not require league/season)
+    // Strategy 1: Search using `/players?search=...` (unlocked across all seasons)
     try {
-      const profileResult = await fetchFromApiFootballEnvelope<ApiFootballPlayerItem>('players/profiles', {
+      const searchResult = await fetchFromApiFootballEnvelope<ApiFootballPlayerItem>('players', {
         search: trimmed,
       });
-      trace.requestedEndpoint = 'players/profiles';
-      trace.httpStatus = profileResult.httpStatus;
-      candidateItems = profileResult.payload.response || [];
-    } catch (profileErr) {
-      // If profiles endpoint is not supported on current plan, fallback to `/players?search=...&season=...`
-      const errorMsg = profileErr instanceof Error ? profileErr.message : String(profileErr);
+      trace.requestedEndpoint = 'players';
+      trace.queryParameters = { search: trimmed };
+      trace.httpStatus = searchResult.httpStatus;
+      candidateItems = searchResult.payload.response || [];
+    } catch (searchErr) {
+      const errorMsg = searchErr instanceof Error ? searchErr.message : String(searchErr);
       trace.apiErrors = errorMsg;
 
-      try {
-        const seasonSearch = await fetchFromApiFootballEnvelope<ApiFootballPlayerItem>('players', {
-          search: trimmed,
-          season: String(CURRENT_SEASON),
-        });
-        trace.requestedEndpoint = 'players';
-        trace.queryParameters = { search: trimmed, season: String(CURRENT_SEASON) };
-        trace.httpStatus = seasonSearch.httpStatus;
-        candidateItems = seasonSearch.payload.response || [];
-      } catch (seasonErr) {
-        trace.apiErrors = seasonErr instanceof Error ? seasonErr.message : String(seasonErr);
+      // If raw query failed (e.g. special characters), try normalized ascii query
+      if (normCandidate !== trimmed.toLowerCase()) {
+        try {
+          const normResult = await fetchFromApiFootballEnvelope<ApiFootballPlayerItem>('players', {
+            search: normCandidate,
+          });
+          trace.queryParameters = { search: normCandidate };
+          trace.httpStatus = normResult.httpStatus;
+          candidateItems = normResult.payload.response || [];
+        } catch {
+          // ignore
+        }
       }
     }
 
@@ -745,14 +748,16 @@ export async function resolvePlayerIdentity(
       const parts = trimmed.split(/\s+/);
       if (parts.length >= 2) {
         const lastName = parts[parts.length - 1];
-        if (lastName.length >= 4) {
+        const normLast = normalizeText(lastName);
+        if (normLast.length >= 4 && !AMBIGUOUS_SURNAMES.has(normLast)) {
           try {
-            const fallbackResult = await fetchFromApiFootballEnvelope<ApiFootballPlayerItem>('players/profiles', {
+            const fallbackResult = await fetchFromApiFootballEnvelope<ApiFootballPlayerItem>('players', {
               search: lastName,
             });
             if (fallbackResult.payload.response && fallbackResult.payload.response.length > 0) {
               candidateItems = fallbackResult.payload.response;
               trace.queryParameters = { search: lastName };
+              trace.httpStatus = fallbackResult.httpStatus;
             }
           } catch {
             // fallback ignore
@@ -768,17 +773,20 @@ export async function resolvePlayerIdentity(
       return null;
     }
 
-    // Score all returned candidate profiles
+    // Score all returned candidate profiles deterministically
     let bestPlayer: ApiFootballPlayerItem['player'] | null = null;
+    let bestItem: ApiFootballPlayerItem | null = null;
     let bestScore = 0;
     let bestMatchMethod = 'UNMATCHED';
 
     for (const item of candidateItems) {
       const p = item.player;
+      if (!p) continue;
       const scoreRes = scoreCandidateIdentity(trimmed, p);
       if (scoreRes.score > bestScore) {
         bestScore = scoreRes.score;
         bestPlayer = p;
+        bestItem = item;
         bestMatchMethod = scoreRes.matchMethod;
       }
     }
@@ -793,7 +801,30 @@ export async function resolvePlayerIdentity(
 
     trace.selectedPlayerId = bestPlayer.id;
     trace.canonicalApiName = bestPlayer.name;
-    trace.position = normalizePosition(bestPlayer.position);
+    const resolvedPosition = normalizePosition(bestPlayer.position || bestItem?.statistics?.[0]?.games?.position);
+    trace.position = resolvedPosition;
+
+    // If search payload contains statistics, pre-resolve and cache current club
+    if (bestItem?.statistics && bestItem.statistics.length > 0) {
+      const primaryStat = bestItem.statistics[0];
+      const clubName = primaryStat.team?.name || 'Unknown Club';
+      const clubId = primaryStat.team?.id;
+      const season = primaryStat.league?.season || CURRENT_SEASON;
+
+      trace.currentClub = clubName;
+      trace.currentClubId = clubId;
+      trace.clubStatus = clubName !== 'Unknown Club' ? 'VERIFIED' : 'UNAVAILABLE';
+
+      const preResolvedClub: ResolvedClubInfo = {
+        clubName,
+        clubId,
+        season,
+        position: resolvedPosition,
+        resolvedAt: new Date().toISOString(),
+        status: clubName !== 'Unknown Club' ? 'VERIFIED' : 'UNAVAILABLE',
+      };
+      setCached(`player_club:${bestPlayer.id}:${CURRENT_SEASON}`, preResolvedClub, CURRENT_CLUB_CACHE_TTL);
+    }
 
     const identity: ResolvedPlayerIdentity = {
       id: bestPlayer.id,
@@ -803,7 +834,7 @@ export async function resolvePlayerIdentity(
       nationality: bestPlayer.nationality || '',
       age: bestPlayer.age,
       photo: bestPlayer.photo,
-      position: normalizePosition(bestPlayer.position),
+      position: resolvedPosition,
       identityScore: bestScore,
       matchMethod: bestMatchMethod,
     };
@@ -892,12 +923,12 @@ export async function resolveCurrentClub(
     const primaryStat = stats[0];
 
     const clubInfo: ResolvedClubInfo = {
-      clubName: primaryStat.team.name,
-      clubId: primaryStat.team.id,
+      clubName: primaryStat.team?.name || 'Unknown Club',
+      clubId: primaryStat.team?.id,
       season: effectiveSeason,
       position: normalizePosition(primaryStat.games?.position || initialPosition),
       resolvedAt: new Date().toISOString(),
-      status: 'VERIFIED',
+      status: primaryStat.team?.name ? 'VERIFIED' : 'UNAVAILABLE',
     };
 
     setCached(cacheKey, clubInfo, CURRENT_CLUB_CACHE_TTL);
@@ -908,7 +939,7 @@ export async function resolveCurrentClub(
         trace.currentClub = clubInfo.clubName;
         trace.currentClubId = clubInfo.clubId;
         trace.position = clubInfo.position;
-        trace.clubStatus = 'VERIFIED';
+        trace.clubStatus = clubInfo.status;
       }
     }
 

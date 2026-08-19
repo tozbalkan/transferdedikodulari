@@ -81,6 +81,12 @@ export function normalizeText(text: string): string {
     .replace(/ö/g, 'o')
     .replace(/Ç/g, 'c')
     .replace(/ç/g, 'c')
+    .replace(/[øØ]/g, 'o')
+    .replace(/[æÆ]/g, 'ae')
+    .replace(/[åÅ]/g, 'a')
+    .replace(/[łŁ]/g, 'l')
+    .replace(/[đĐ]/g, 'd')
+    .replace(/ß/g, 'ss')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
@@ -461,9 +467,9 @@ export function stripCandidatePrefixes(candidate: string): string {
     }
   }
 
-  // Also strip common leading lowercase stopwords
+  // Also strip common leading lowercase stopwords whenever there are 2 or more words
   const parts = cleaned.split(/\s+/);
-  if (parts.length > 2) {
+  if (parts.length >= 2) {
     const firstNorm = normalizeText(parts[0]);
     if (LEADING_STOPWORDS.includes(firstNorm)) {
       cleaned = parts.slice(1).join(' ').trim();
@@ -479,8 +485,8 @@ export function stripCandidatePrefixes(candidate: string): string {
 export function extractCandidateSpans(rawText: string): CandidateTextSpan[] {
   if (!rawText) return [];
 
-  // Match 2 to 3 capitalized words (e.g. "Gabriel Martinelli", "Marcus Rashford", "Rafael Leao")
-  const multiWordRegex = /\b([A-ZÇĞİÖŞÜ][a-zçğıöşü]+(?:\s+[A-ZÇĞİÖŞÜ][a-zçğıöşü]+){1,2})\b/g;
+  // Match 1 to 3 capitalized words (e.g. "Gabriel Martinelli", "Marcus Rashford", "Rafael Leao", "Osimhen")
+  const multiWordRegex = /\b([A-ZÇĞİÖŞÜ][a-zçğıöşü]+(?:\s+[A-ZÇĞİÖŞÜ][a-zçğıöşü]+){0,2})\b/g;
   const spans: CandidateTextSpan[] = [];
   let match: RegExpExecArray | null;
 
@@ -489,7 +495,7 @@ export function extractCandidateSpans(rawText: string): CandidateTextSpan[] {
     const stripped = stripCandidatePrefixes(rawSpan);
     const norm = normalizeText(stripped);
 
-    if (norm.length < 5) continue;
+    if (norm.length < 4) continue;
     if (NON_PLAYER_ENTITIES.has(norm)) continue;
     if (AMBIGUOUS_SURNAMES.has(norm)) continue;
 
@@ -502,7 +508,7 @@ export function extractCandidateSpans(rawText: string): CandidateTextSpan[] {
     }
 
     const parts = stripped.split(/\s+/);
-    if (parts.length >= 2 && parts.length <= 3) {
+    if (parts.length >= 1 && parts.length <= 3) {
       const isBlacklisted = parts.some((part) => {
         const pNorm = normalizeText(part);
         return (
@@ -525,6 +531,13 @@ export function extractCandidateSpans(rawText: string): CandidateTextSpan[] {
       });
 
       if (!isBlacklisted) {
+        // If single token, ensure minimum length and not in stopword list
+        if (parts.length === 1) {
+          if (norm.length < 4 || LEADING_STOPWORDS.includes(norm) || AMBIGUOUS_SURNAMES.has(norm)) {
+            continue;
+          }
+        }
+
         spans.push({
           rawText: stripped,
           start: match.index,
@@ -577,7 +590,7 @@ export function scoreCandidateIdentity(
   if (normName && (normQuery.includes(normName) || normName.includes(normQuery))) {
     // If name is ambiguous surname only, require compatible first name
     if (AMBIGUOUS_SURNAMES.has(normName)) {
-      if (normFirst && normQuery.includes(normFirst)) {
+      if (normFirst && (normQuery.includes(normFirst) || normFirst.includes(normQuery.split(' ')[0]))) {
         return { score: 0.9, matchMethod: 'CANONICAL_NAME' };
       }
       return { score: 0, matchMethod: 'UNMATCHED' };
@@ -585,14 +598,39 @@ export function scoreCandidateIdentity(
     return { score: 0.95, matchMethod: 'CANONICAL_NAME' };
   }
 
-  // 3. First + Last name tokens present in query
   const queryTokens = normQuery.split(/\s+/).filter(Boolean);
+
+  // 3. Single distinct surname / mononym match: "Leao", "Osimhen", "Batrakov", "Sorloth"
+  if (queryTokens.length === 1) {
+    const singleToken = queryTokens[0];
+    if (!AMBIGUOUS_SURNAMES.has(singleToken) && singleToken.length >= 4) {
+      const surnameMatches =
+        normLast === singleToken ||
+        normLast.endsWith(` ${singleToken}`) ||
+        normLast.startsWith(`${singleToken} `) ||
+        normName === singleToken ||
+        normName.endsWith(` ${singleToken}`);
+
+      if (surnameMatches) {
+        return { score: 0.88, matchMethod: 'CANONICAL_NAME' };
+      }
+    }
+  }
+
+  // 4. Multi-token (First + Last name) matching
   if (queryTokens.length >= 2) {
     const firstToken = queryTokens[0];
     const lastToken = queryTokens[queryTokens.length - 1];
 
-    const firstMatches = normFirst.includes(firstToken) || normName.includes(firstToken);
-    // Ensure the last token matches the actual player surname (normLast)
+    // Check first name (including prefix / transliteration matching like "Aleksey" vs "Aleksei")
+    const firstMatches =
+      normFirst.includes(firstToken) ||
+      normName.includes(firstToken) ||
+      firstToken.includes(normFirst) ||
+      (firstToken.length >= 4 && normFirst.startsWith(firstToken.slice(0, 4))) ||
+      (normFirst.length >= 4 && firstToken.startsWith(normFirst.slice(0, 4)));
+
+    // Ensure the last token matches the actual player surname (normLast or normName)
     const lastMatches =
       normLast === lastToken ||
       normLast.endsWith(` ${lastToken}`) ||
@@ -604,30 +642,18 @@ export function scoreCandidateIdentity(
       return { score: 0.92, matchMethod: 'FIRST_LAST_NAME' };
     }
 
-
-    // 4. Initials match: "L. Sane", "V. Osimhen", "G. Martinelli"
+    // Initials match: "L. Sane", "V. Osimhen", "G. Martinelli"
     if (lastMatches && firstToken.length === 1 && normFirst.startsWith(firstToken)) {
       return { score: 0.88, matchMethod: 'INITIALS_SURNAME' };
     }
-  }
 
-  // 5. Single strong distinctive surname with compatible first name
-  if (queryTokens.length === 2) {
-    const firstToken = queryTokens[0];
-    const lastToken = queryTokens[1];
-    const lastMatches =
-      normLast === lastToken ||
-      normLast.endsWith(` ${lastToken}`) ||
-      normName.endsWith(` ${lastToken}`) ||
-      normName === lastToken;
-
+    // Distinctive surname with compatible first initial or substring
     if (!AMBIGUOUS_SURNAMES.has(lastToken) && lastMatches) {
       if (normFirst.startsWith(firstToken[0]) || normFirst.includes(firstToken)) {
         return { score: 0.85, matchMethod: 'TOKEN_SUBSET' };
       }
     }
   }
-
 
   return { score: 0, matchMethod: 'UNMATCHED' };
 }
