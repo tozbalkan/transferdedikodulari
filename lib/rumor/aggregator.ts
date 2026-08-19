@@ -293,7 +293,7 @@ export async function aggregateLiveRumors(options?: AggregateRumorOptions): Prom
 
   // Step 5: Extract & Deduplicate Candidate Spans (Task 6)
   const candidateSpansByArticle = new Map<string, Array<{ rawText: string; norm: string }>>();
-  const uniqueCandidatesMap = new Map<string, string>(); // norm -> rawText
+  const candidateFrequencyMap = new Map<string, { rawText: string; norm: string; count: number }>();
   let extractedSpansCount = 0;
 
   for (const article of uniqueArticles) {
@@ -303,12 +303,24 @@ export async function aggregateLiveRumors(options?: AggregateRumorOptions): Prom
 
     for (const span of spans) {
       articleSpans.push({ rawText: span.rawText, norm: span.normalizedCandidate });
-      if (!uniqueCandidatesMap.has(span.normalizedCandidate)) {
-        uniqueCandidatesMap.set(span.normalizedCandidate, span.rawText);
+      const existing = candidateFrequencyMap.get(span.normalizedCandidate);
+      if (existing) {
+        existing.count++;
+      } else {
+        candidateFrequencyMap.set(span.normalizedCandidate, {
+          rawText: span.rawText,
+          norm: span.normalizedCandidate,
+          count: 1,
+        });
       }
     }
     candidateSpansByArticle.set(article.canonicalId, articleSpans);
   }
+
+  // Sort unique candidates by frequency so high-volume transfer targets resolve first
+  const sortedCandidates = Array.from(candidateFrequencyMap.values()).sort(
+    (a, b) => b.count - a.count,
+  );
 
   // Step 6: Efficient Unique Candidate Resolution (Tasks 2, 3, 4, 5, 7)
   const resolvedIdentityMap = new Map<string, RegisteredPlayer>(); // norm -> player
@@ -316,22 +328,23 @@ export async function aggregateLiveRumors(options?: AggregateRumorOptions): Prom
   let identityVerified = 0;
   let identityUnresolved = 0;
 
-  for (const [norm, rawText] of uniqueCandidatesMap.entries()) {
+  for (const candidate of sortedCandidates) {
     identityAttempted++;
-    const resolved = await globalPlayerRegistry.resolveCandidatePlayer(rawText);
+    const resolved = await globalPlayerRegistry.resolveCandidatePlayer(candidate.rawText);
 
     if (resolved && typeof resolved.externalId === 'number') {
       identityVerified++;
-      resolvedIdentityMap.set(norm, resolved);
+      resolvedIdentityMap.set(candidate.norm, resolved);
     } else {
       identityUnresolved++;
       rejectedDiagnostics.push({
-        playerName: rawText,
+        playerName: candidate.rawText,
         reason: 'UNRESOLVED_PLAYER',
-        details: `Candidate "${rawText}" could not be authoritatively resolved to an API-Football player profile.`,
+        details: `Candidate "${candidate.rawText}" could not be authoritatively resolved to an API-Football player profile.`,
       });
     }
   }
+
 
   // Current Club Lookup Stats (Task 7)
   const uniqueVerifiedExternalIds = new Set<number>();
@@ -598,8 +611,9 @@ export async function aggregateLiveRumors(options?: AggregateRumorOptions): Prom
       transferRelevantArticles: relevantRawItems.length,
       uniqueArticles: uniqueArticles.length,
       candidateSpansExtracted: extractedSpansCount,
-      uniqueNormalizedCandidates: uniqueCandidatesMap.size,
+      uniqueNormalizedCandidates: candidateFrequencyMap.size,
       identityResolution: {
+
         attempted: identityAttempted,
         verified: identityVerified,
         unresolved: identityUnresolved,

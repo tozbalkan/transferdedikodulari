@@ -592,11 +592,18 @@ export function scoreCandidateIdentity(
     const lastToken = queryTokens[queryTokens.length - 1];
 
     const firstMatches = normFirst.includes(firstToken) || normName.includes(firstToken);
-    const lastMatches = normLast.includes(lastToken) || normName.includes(lastToken);
+    // Ensure the last token matches the actual player surname (normLast)
+    const lastMatches =
+      normLast === lastToken ||
+      normLast.endsWith(` ${lastToken}`) ||
+      normLast.startsWith(`${lastToken} `) ||
+      normName.endsWith(` ${lastToken}`) ||
+      normName === lastToken;
 
     if (firstMatches && lastMatches) {
       return { score: 0.92, matchMethod: 'FIRST_LAST_NAME' };
     }
+
 
     // 4. Initials match: "L. Sane", "V. Osimhen", "G. Martinelli"
     if (lastMatches && firstToken.length === 1 && normFirst.startsWith(firstToken)) {
@@ -606,14 +613,21 @@ export function scoreCandidateIdentity(
 
   // 5. Single strong distinctive surname with compatible first name
   if (queryTokens.length === 2) {
+    const firstToken = queryTokens[0];
     const lastToken = queryTokens[1];
-    if (!AMBIGUOUS_SURNAMES.has(lastToken) && (normLast.includes(lastToken) || normName.includes(lastToken))) {
-      const firstToken = queryTokens[0];
+    const lastMatches =
+      normLast === lastToken ||
+      normLast.endsWith(` ${lastToken}`) ||
+      normName.endsWith(` ${lastToken}`) ||
+      normName === lastToken;
+
+    if (!AMBIGUOUS_SURNAMES.has(lastToken) && lastMatches) {
       if (normFirst.startsWith(firstToken[0]) || normFirst.includes(firstToken)) {
         return { score: 0.85, matchMethod: 'TOKEN_SUBSET' };
       }
     }
   }
+
 
   return { score: 0, matchMethod: 'UNMATCHED' };
 }
