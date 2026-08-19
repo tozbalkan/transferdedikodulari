@@ -15,11 +15,13 @@ import { globalPlayerRegistry } from '@/lib/players/registry';
 import { calculateConfidence, calculateRumorScore, calculateTrend } from '@/lib/rumor/scorer';
 import {
   getGalatasaraySquadDetailed,
+  getApiFootballKey,
   invalidateCache,
   CURRENT_SEASON,
   GALATASARAY_DEFAULT_TEAM_ID,
   type SquadResolutionStatus,
 } from '@/lib/api-football';
+
 import { SerperSearchNewsAdapter } from '@/lib/news/search-adapter';
 
 export const RUMOR_WINDOW_DAYS = 7;
@@ -528,9 +530,8 @@ export async function aggregateLiveRumors(options?: AggregateRumorOptions): Prom
     r.latestNews.forEach((n) => activeArticleIds.add(n.id));
   });
 
-  const isConfigured = Boolean(
-    process.env.API_FOOTBALL_KEY && process.env.API_FOOTBALL_KEY.trim().length > 0,
-  );
+  const isConfigured = Boolean(getApiFootballKey());
+
 
   return {
     rumors: incomingRumors,

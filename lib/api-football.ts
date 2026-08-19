@@ -239,7 +239,16 @@ export function normalizePosition(apiPosition?: string): Position {
   return 'MIDFIELDER';
 }
 
-// ─── Base Fetcher ───────────────────────────────────────────────────────────
+export function getApiFootballKey(): string | undefined {
+  const key =
+    process.env.API_FOOTBALL_KEY ||
+    process.env.API_SPORTS_KEY ||
+    process.env.APISPORTS_KEY ||
+    process.env.FOOTBALL_API_KEY ||
+    process.env.API_FOOTBALL ||
+    process.env.NEXT_PUBLIC_API_FOOTBALL_KEY;
+  return key && key.trim() !== '' ? key.trim() : undefined;
+}
 
 interface FetchResult<T> {
   payload: ApiFootballEnvelope<T>;
@@ -250,10 +259,11 @@ async function fetchFromApiFootballEnvelope<T>(
   endpoint: string,
   params: Record<string, string> = {},
 ): Promise<FetchResult<T>> {
-  const apiKey = process.env.API_FOOTBALL_KEY;
-  if (!apiKey || apiKey.trim() === '') {
+  const apiKey = getApiFootballKey();
+  if (!apiKey) {
     throw new ApiFootballKeyMissingError();
   }
+
 
   const url = new URL(`${API_FOOTBALL_BASE_URL}/${endpoint}`);
   Object.entries(params).forEach(([key, value]) => {
@@ -341,7 +351,7 @@ export async function resolveGalatasarayTeam(): Promise<{ id: number; name: stri
   const cached = getCached<{ id: number; name: string }>(cacheKey);
   if (cached) return cached;
 
-  if (!process.env.API_FOOTBALL_KEY || process.env.API_FOOTBALL_KEY.trim() === '') {
+  if (!getApiFootballKey()) {
     return { id: GALATASARAY_DEFAULT_TEAM_ID, name: GALATASARAY_TEAM_NAME };
   }
 
@@ -388,7 +398,7 @@ export async function getGalatasaraySquadDetailed(
   }
 
   // Fail-closed if API key is not configured: No synthetic squad fallback
-  if (!process.env.API_FOOTBALL_KEY || process.env.API_FOOTBALL_KEY.trim() === '') {
+  if (!getApiFootballKey()) {
     return {
       status: 'UNAVAILABLE',
       season: targetSeason,
@@ -654,7 +664,7 @@ export async function resolvePlayerIdentity(
   const trimmed = query.trim();
   if (!trimmed || trimmed.length < 3) return null;
 
-  if (!process.env.API_FOOTBALL_KEY || process.env.API_FOOTBALL_KEY.trim() === '') {
+  if (!getApiFootballKey()) {
     return null;
   }
 
@@ -702,7 +712,7 @@ export async function resolveCurrentClub(
   playerId: number,
   targetSeason: number = CURRENT_SEASON,
 ): Promise<ResolvedClubInfo | null> {
-  if (!process.env.API_FOOTBALL_KEY || process.env.API_FOOTBALL_KEY.trim() === '') {
+  if (!getApiFootballKey()) {
     return null;
   }
 
