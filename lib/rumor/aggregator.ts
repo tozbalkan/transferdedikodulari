@@ -1,6 +1,7 @@
 import type {
   NewsItem,
   Player,
+  RumorEvidence,
   RumorSourceInfo,
   SourceDistribution,
   TransferRumor,
@@ -9,7 +10,7 @@ import type {
 import { fetchAllFeeds } from '@/lib/news/rss';
 import { FALLBACK_REAL_NEWS } from '@/lib/news/fallback-news';
 import { deduplicateArticles, isGalatasarayRelevant, type TransferDirection } from '@/lib/news/parser';
-import { matchPlayer, extractCandidateNames } from '@/lib/players/matcher';
+import { extractCandidateSpans, matchPlayerWithSpan } from '@/lib/players/matcher';
 import { globalPlayerRegistry } from '@/lib/players/registry';
 import { calculateConfidence, calculateRumorScore, calculateTrend } from '@/lib/rumor/scorer';
 import {
@@ -39,11 +40,12 @@ export interface RejectedRumorDiagnostic {
 
 export interface CandidateDiscoveryDiagnostic {
   articleTitle: string;
-  extractedName: string;
-  resolvedPlayerId?: string;
-  resolvedName?: string;
+  candidateSpan: string;
+  resolvedPlayerId?: number | string;
+  resolvedCanonicalName?: string;
   currentClub?: string;
-  status: 'RESOLVED' | 'UNRESOLVED';
+  position?: string;
+  status: 'VERIFIED' | 'UNRESOLVED';
 }
 
 export interface AggregationResult {
@@ -53,12 +55,15 @@ export interface AggregationResult {
     season: number;
     squadStatus: SquadResolutionStatus;
     squadSize: number;
+    squadEndpoint: string;
+    rawSquadResponseCount: number;
+    paginationPages: number;
     fetchedArticles: number;
     transferRelevantArticles: number;
     uniqueArticles: number;
     extractedCandidatesCount: number;
-    resolvedPlayersCount: number;
-    unresolvedPlayersCount: number;
+    verifiedPlayersCount: number;
+    unresolvedCandidatesCount: number;
     activeIncomingRumors: number;
     activeOutgoingRumors: number;
     discoveredCandidates: CandidateDiscoveryDiagnostic[];
@@ -69,6 +74,7 @@ export interface AggregationResult {
 interface PlayerArticleBucket {
   player: Player;
   direction: TransferDirection;
+  evidence: RumorEvidence[];
   articles: Array<{
     id: string;
     title: string;
@@ -84,40 +90,50 @@ interface PlayerArticleBucket {
 }
 
 /**
- * Pure function to check if a transfer rumor is an active, valid INCOMING transfer rumor
- * evaluated against dynamically resolved squad names and fail-closed status.
+ * Check if a transfer rumor is an active, valid INCOMING transfer rumor
+ * evaluated against complete authoritative squad data and fail-closed status.
  */
 export function isActiveIncomingRumor(
   rumor: TransferRumor,
+  currentSquadMap: Map<number, Player>,
   currentSquadNames: Set<string>,
   squadStatus: SquadResolutionStatus,
   windowDays: number = RUMOR_WINDOW_DAYS,
 ): { isActive: boolean; reason?: RejectionReason; details?: string } {
-  // 1. Fail-closed: Only VERIFIED squad resolution can authorize incoming rumors
-  if (squadStatus === 'INVALID') {
+  // 1. Fail-closed: Only VERIFIED squad resolution authorizes incoming rumors
+  if (squadStatus !== 'VERIFIED') {
     return {
       isActive: false,
       reason: 'SQUAD_UNAVAILABLE',
-      details: 'Galatasaray squad verification failed (INVALID status).',
+      details: `Galatasaray squad verification status is ${squadStatus}.`,
     };
   }
 
-  // 2. Dynamic Check: Is the player currently a member of Galatasaray squad?
+  // 2. Authoritative External ID matching against current squad
+  if (typeof rumor.player.externalId === 'number' && currentSquadMap.has(rumor.player.externalId)) {
+    return {
+      isActive: false,
+      reason: 'CURRENT_SQUAD',
+      details: `${rumor.player.name} (External ID: ${rumor.player.externalId}) is in current Galatasaray squad.`,
+    };
+  }
+
+  // 3. Normalized Name & Club matching
   const playerNameLower = rumor.player.name.toLowerCase();
-  const isCurrentPlayer =
+  const isCurrentPlayerByName =
     currentSquadNames.has(playerNameLower) ||
     rumor.player.currentClub?.toLowerCase().includes('galatasaray') ||
     rumor.player.aliases.some((alias) => currentSquadNames.has(alias.toLowerCase()));
 
-  if (isCurrentPlayer) {
+  if (isCurrentPlayerByName) {
     return {
       isActive: false,
       reason: 'CURRENT_SQUAD',
-      details: `${rumor.player.name} is a resolved current Galatasaray squad member.`,
+      details: `${rumor.player.name} matches resolved current Galatasaray squad roster.`,
     };
   }
 
-  // 3. Check recency window
+  // 4. Recency window check
   const latestDate = rumor.latestNews[0]?.publishedAt
     ? new Date(rumor.latestNews[0].publishedAt).getTime()
     : 0;
@@ -132,7 +148,7 @@ export function isActiveIncomingRumor(
     };
   }
 
-  // 4. Check confidence threshold
+  // 5. Confidence threshold check
   if ((rumor.confidenceScore ?? 0) < 0.35) {
     return {
       isActive: false,
@@ -146,18 +162,26 @@ export function isActiveIncomingRumor(
 
 /**
  * Execute the complete live real data pipeline:
- * Article Ingestion -> Dynamic Player Extraction (NER) -> Entity Resolution (API-Football) -> Dynamic Squad Verification -> Scoring
+ * Article Ingestion -> Exact Text-Span NER -> API-Football Entity Resolution -> Complete Squad Filtering -> Evidence Binding -> Scoring
  */
 export async function aggregateLiveRumors(): Promise<AggregationResult> {
   const rejectedDiagnostics: RejectedRumorDiagnostic[] = [];
   const discoveredCandidates: CandidateDiscoveryDiagnostic[] = [];
 
-  // Step 1: Dynamically resolve official 2026-2027 Galatasaray squad from API-Football
+  // Step 1: Dynamically resolve complete official 2026-2027 Galatasaray squad
   await globalPlayerRegistry.initializeSquad();
   const squadResolution = await getGalatasaraySquadDetailed(undefined, CURRENT_SEASON);
-  const currentSquadNames = new Set<string>(
-    squadResolution.squad.map((p) => p.name.toLowerCase()),
-  );
+
+  const currentSquadMap = new Map<number, Player>();
+  const currentSquadNames = new Set<string>();
+
+  squadResolution.squad.forEach((p) => {
+    if (typeof p.externalId === 'number') {
+      currentSquadMap.set(p.externalId, p);
+    }
+    currentSquadNames.add(p.name.toLowerCase());
+    p.aliases.forEach((a) => currentSquadNames.add(a.toLowerCase()));
+  });
 
   // Step 2: Ingest raw feeds from RSS & Search
   const { items: rawNewsItems, health: sourceHealth } = await fetchAllFeeds();
@@ -190,72 +214,93 @@ export async function aggregateLiveRumors(): Promise<AggregationResult> {
   // Step 4: Deduplicate multi-source news articles
   const uniqueArticles = deduplicateArticles(relevantRawItems);
 
-  // Step 5: Dynamic Player Discovery & Entity Resolution from Real Articles
+  // Step 5: Dynamic Player Discovery with Exact Text Spans & Authoritative Resolution
   const playerBuckets = new Map<string, PlayerArticleBucket>();
   let extractedCandidatesCount = 0;
-  let resolvedPlayersCount = 0;
-  let unresolvedPlayersCount = 0;
+  let verifiedPlayersCount = 0;
+  let unresolvedCandidatesCount = 0;
 
   for (const article of uniqueArticles) {
-    const matchedForThisArticle = new Map<string, { player: Player; confidence: number }>();
+    const articleEvidenceMap = new Map<string, { player: Player; evidence: RumorEvidence; confidence: number }>();
 
-    // A. Match against already registered in-memory player entities
+    // A. Match against already verified in-memory player entities
     const currentRegistered = globalPlayerRegistry.getAllPlayers();
     for (const player of currentRegistered) {
-      const match = matchPlayer(article.searchableText, player);
+      const match = matchPlayerWithSpan(article.searchableText, player);
       if (match.matched) {
-        matchedForThisArticle.set(player.id, { player, confidence: match.confidence });
+        const evidence: RumorEvidence = {
+          articleId: article.canonicalId,
+          articleTitle: article.title,
+          candidateTextSpan: match.matchedSpan || player.name,
+          candidateCanonicalName: player.name,
+          matchMethod: match.matchMethod || 'EXACT_FULL_NAME',
+          matchConfidence: match.confidence,
+          publishedAt: article.publishedAt,
+          source: article.sources[0] || 'RSS',
+          url: article.url,
+        };
+        articleEvidenceMap.set(player.id, { player, evidence, confidence: match.confidence });
       }
     }
 
-    // B. Extract unknown player candidate names from article text (True Discovery)
-    const candidateNames = extractCandidateNames(article.searchableText);
-    extractedCandidatesCount += candidateNames.length;
+    // B. Extract candidate person text spans from article text
+    const candidateSpans = extractCandidateSpans(article.searchableText);
+    extractedCandidatesCount += candidateSpans.length;
 
-    for (const candidateName of candidateNames) {
-      const resolved = await globalPlayerRegistry.resolveCandidatePlayer(candidateName);
+    for (const span of candidateSpans) {
+      const resolved = await globalPlayerRegistry.resolveCandidatePlayer(span.rawText);
 
-      if (resolved) {
-        resolvedPlayersCount++;
+      if (resolved && typeof resolved.externalId === 'number') {
+        verifiedPlayersCount++;
         discoveredCandidates.push({
           articleTitle: article.title,
-          extractedName: candidateName,
-          resolvedPlayerId: resolved.id,
-          resolvedName: resolved.name,
+          candidateSpan: span.rawText,
+          resolvedPlayerId: resolved.externalId,
+          resolvedCanonicalName: resolved.name,
           currentClub: resolved.currentClub,
-          status: 'RESOLVED',
+          position: resolved.position,
+          status: 'VERIFIED',
         });
 
-        const match = matchPlayer(article.searchableText, resolved);
+        const match = matchPlayerWithSpan(article.searchableText, resolved);
         if (match.matched) {
-          matchedForThisArticle.set(resolved.id, {
-            player: resolved,
-            confidence: match.confidence,
-          });
+          const evidence: RumorEvidence = {
+            articleId: article.canonicalId,
+            articleTitle: article.title,
+            candidateTextSpan: span.rawText,
+            candidateCanonicalName: resolved.name,
+            matchMethod: match.matchMethod || 'EXACT_FULL_NAME',
+            matchConfidence: match.confidence,
+            publishedAt: article.publishedAt,
+            source: article.sources[0] || 'RSS',
+            url: article.url,
+          };
+          articleEvidenceMap.set(resolved.id, { player: resolved, evidence, confidence: match.confidence });
         }
       } else {
-        unresolvedPlayersCount++;
+        unresolvedCandidatesCount++;
         discoveredCandidates.push({
           articleTitle: article.title,
-          extractedName: candidateName,
+          candidateSpan: span.rawText,
           status: 'UNRESOLVED',
         });
         rejectedDiagnostics.push({
-          playerName: candidateName,
+          playerName: span.rawText,
           reason: 'UNRESOLVED_PLAYER',
-          details: `Could not resolve player entity "${candidateName}" via API-Football.`,
+          details: `Candidate "${span.rawText}" is not an authoritative API-Football player entity.`,
         });
       }
     }
 
-    // Associate article with all matched players
-    for (const { player, confidence } of matchedForThisArticle.values()) {
+    // Associate article only with players with verified text-span evidence
+    for (const { player, evidence, confidence } of articleEvidenceMap.values()) {
       let bucket = playerBuckets.get(player.id);
       if (!bucket) {
-        bucket = { player, direction: article.direction, articles: [] };
+        bucket = { player, direction: article.direction, evidence: [], articles: [] };
         playerBuckets.set(player.id, bucket);
       }
 
+      bucket.evidence.push(evidence);
       bucket.articles.push({
         id: article.canonicalId,
         title: article.title,
@@ -271,11 +316,11 @@ export async function aggregateLiveRumors(): Promise<AggregationResult> {
     }
   }
 
-  // Step 6: Compute metrics and rumors for each discovered player
+  // Step 6: Compute metrics and rumors for verified players
   const allRumors: TransferRumor[] = [];
 
   for (const bucket of playerBuckets.values()) {
-    const { player, articles } = bucket;
+    const { player, articles, evidence } = bucket;
     if (articles.length === 0) continue;
 
     articles.sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
@@ -309,12 +354,12 @@ export async function aggregateLiveRumors(): Promise<AggregationResult> {
       forum: 0,
     };
 
-    const avgConfidence = articles.reduce((acc, a) => acc + a.matchConfidence, 0) / articles.length;
+    const avgMatchConfidence = articles.reduce((acc, a) => acc + a.matchConfidence, 0) / articles.length;
 
-    const confidenceScore = calculateConfidence(
+    const rumorConfidence = calculateConfidence(
       uniqueArticleCount,
       totalSourceCount,
-      avgConfidence,
+      avgMatchConfidence,
     );
 
     const { score, recencyScore, sourceDiversityScore } = calculateRumorScore({
@@ -345,22 +390,26 @@ export async function aggregateLiveRumors(): Promise<AggregationResult> {
       trend,
       trendPercentage,
       score,
-      confidenceScore: Math.round(confidenceScore * 100) / 100,
+      confidenceScore: Math.round(rumorConfidence * 100) / 100,
+      entityResolutionConfidence: player.entityResolutionConfidence || 1.0,
+      rumorConfidence: Math.round(rumorConfidence * 100) / 100,
       recencyScore,
       sourceDiversityScore,
       sourceDistribution: distribution,
       sources: sourcesList,
       latestNews,
+      evidence,
     });
   }
 
-  // Step 7: Apply Dynamic Active Incoming Rumor Filter
+  // Step 7: Apply Fail-Closed Active Incoming Rumor Filter
   const incomingRumors: TransferRumor[] = [];
   let outgoingCount = 0;
 
   for (const rumor of allRumors) {
     const eligibility = isActiveIncomingRumor(
       rumor,
+      currentSquadMap,
       currentSquadNames,
       squadResolution.status,
       RUMOR_WINDOW_DAYS,
@@ -380,10 +429,9 @@ export async function aggregateLiveRumors(): Promise<AggregationResult> {
     }
   }
 
-  // Sort active incoming rumors by score descending
   incomingRumors.sort((a, b) => b.score - a.score);
 
-  // Step 8: Compute accurate active window UI counters
+  // Step 8: Compute active UI counters
   const activeArticleIds = new Set<string>();
   incomingRumors.forEach((r) => {
     r.latestNews.forEach((n) => activeArticleIds.add(n.id));
@@ -401,13 +449,16 @@ export async function aggregateLiveRumors(): Promise<AggregationResult> {
     diagnostics: {
       season: CURRENT_SEASON,
       squadStatus: squadResolution.status,
-      squadSize: squadResolution.squadSize,
+      squadSize: squadResolution.normalizedSquadCount,
+      squadEndpoint: squadResolution.endpoint,
+      rawSquadResponseCount: squadResolution.rawResponseCount,
+      paginationPages: squadResolution.paginationPages,
       fetchedArticles: activeNewsItems.length,
       transferRelevantArticles: relevantRawItems.length,
       uniqueArticles: uniqueArticles.length,
       extractedCandidatesCount,
-      resolvedPlayersCount,
-      unresolvedPlayersCount,
+      verifiedPlayersCount,
+      unresolvedCandidatesCount,
       activeIncomingRumors: incomingRumors.length,
       activeOutgoingRumors: outgoingCount,
       discoveredCandidates,

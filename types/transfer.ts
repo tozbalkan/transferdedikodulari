@@ -9,11 +9,13 @@ export type TrendDirection = (typeof TREND_DIRECTIONS)[number];
 export const RUMOR_SOURCE_TYPES = ['PRESS', 'RSS', 'X', 'FORUM'] as const;
 export type RumorSourceType = (typeof RUMOR_SOURCE_TYPES)[number];
 
+export type EntityResolutionStatus = 'VERIFIED' | 'AMBIGUOUS' | 'UNRESOLVED' | 'REJECTED_NON_PLAYER';
+
 // ─── Player Model ───────────────────────────────────────────────────────────
 
 export interface Player {
   id: string;
-  externalId: number | string;
+  externalId: number;
   name: string;
   firstName: string;
   lastName: string;
@@ -24,6 +26,31 @@ export interface Player {
   age?: number;
   photo?: string;
   aliases: string[];
+  entityResolutionConfidence?: number;
+  lastResolvedAt?: string;
+}
+
+// ─── Candidate Text Span & NER ──────────────────────────────────────────────
+
+export interface CandidateTextSpan {
+  rawText: string;
+  start: number;
+  end: number;
+  normalizedCandidate: string;
+}
+
+// ─── Rumor Evidence Model ───────────────────────────────────────────────────
+
+export interface RumorEvidence {
+  articleId: string;
+  articleTitle: string;
+  candidateTextSpan: string;
+  candidateCanonicalName: string;
+  matchMethod: 'EXACT_FULL_NAME' | 'FIRST_LAST_NAME' | 'VERIFIED_ALIAS' | 'INITIALS';
+  matchConfidence: number;
+  publishedAt: string;
+  source: string;
+  url: string;
 }
 
 // ─── News & RSS Models ──────────────────────────────────────────────────────
@@ -92,11 +119,14 @@ export interface TransferRumor {
   trendPercentage: number;
   score: number;
   confidenceScore?: number;
+  entityResolutionConfidence?: number;
+  rumorConfidence?: number;
   recencyScore?: number;
   sourceDiversityScore?: number;
   sourceDistribution: SourceDistribution;
   sources: RumorSourceInfo[];
   latestNews: NewsItem[];
+  evidence?: RumorEvidence[];
 }
 
 // ─── API Response ───────────────────────────────────────────────────────────

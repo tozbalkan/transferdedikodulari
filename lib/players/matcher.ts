@@ -1,4 +1,4 @@
-import type { Player } from '@/types/transfer';
+import type { Player, CandidateTextSpan } from '@/types/transfer';
 
 // ─── Ambiguous Surnames (Must never match alone) ───────────────────────────
 
@@ -99,24 +99,31 @@ function containsWord(haystack: string, needle: string): boolean {
   return regex.test(haystack);
 }
 
-// ─── Matcher Logic ──────────────────────────────────────────────────────────
+// ─── Matcher Logic & Text-Span Verification ────────────────────────────────
 
-export interface MatchResult {
+export interface MatchSpanResult {
   matched: boolean;
+  matchMethod?: 'EXACT_FULL_NAME' | 'FIRST_LAST_NAME' | 'VERIFIED_ALIAS' | 'INITIALS';
+  matchedSpan?: string;
   confidence: number;
-  matchedAlias?: string;
 }
 
 /**
- * Evaluate if a given player is mentioned in the normalized text.
+ * Evaluate if a given player is mentioned in the text, returning exact text-span evidence.
+ * Requires actual presence of player's identity in the text.
  */
-export function matchPlayer(rawText: string, player: Player): MatchResult {
+export function matchPlayerWithSpan(rawText: string, player: Player): MatchSpanResult {
   const normText = normalizeText(rawText);
   const normFullName = normalizeText(player.name);
 
   // 1. Exact full name matching (Highest confidence)
   if (normFullName && normFullName.length >= 4 && normText.includes(normFullName)) {
-    return { matched: true, confidence: 1.0, matchedAlias: player.name };
+    return {
+      matched: true,
+      matchMethod: 'EXACT_FULL_NAME',
+      matchedSpan: player.name,
+      confidence: 1.0,
+    };
   }
 
   // 2. First + Last name combination
@@ -125,13 +132,14 @@ export function matchPlayer(rawText: string, player: Player): MatchResult {
     if (combined && combined !== normFullName && normText.includes(combined)) {
       return {
         matched: true,
+        matchMethod: 'FIRST_LAST_NAME',
+        matchedSpan: `${player.firstName} ${player.lastName}`,
         confidence: 0.95,
-        matchedAlias: `${player.firstName} ${player.lastName}`,
       };
     }
   }
 
-  // 3. Registered aliases
+  // 3. Registered verified aliases
   for (const alias of player.aliases || []) {
     const normAlias = normalizeText(alias);
     if (!normAlias || normAlias.length < 4) continue;
@@ -140,38 +148,39 @@ export function matchPlayer(rawText: string, player: Player): MatchResult {
     if (AMBIGUOUS_SURNAMES.has(normAlias)) continue;
 
     if (containsWord(normText, normAlias)) {
-      return { matched: true, confidence: 0.9, matchedAlias: alias };
+      return {
+        matched: true,
+        matchMethod: 'VERIFIED_ALIAS',
+        matchedSpan: alias,
+        confidence: 0.9,
+      };
     }
   }
 
-  // 4. Initials: "G. Martinelli" or "Martinelli, G."
+  // 4. Initials: "G. Martinelli"
   if (player.firstName && player.lastName && player.lastName.length >= 4) {
     const normLast = normalizeText(player.lastName);
     const firstChar = normalizeText(player.firstName)[0];
 
     if (firstChar && !AMBIGUOUS_SURNAMES.has(normLast)) {
-      const initialVariant1 = `${firstChar}. ${normLast}`;
-      const initialVariant2 = `${firstChar} ${normLast}`;
-      if (normText.includes(initialVariant1) || containsWord(normText, initialVariant2)) {
-        return { matched: true, confidence: 0.85, matchedAlias: initialVariant1 };
+      const initialVariant = `${firstChar}. ${normLast}`;
+      if (normText.includes(initialVariant)) {
+        return {
+          matched: true,
+          matchMethod: 'INITIALS',
+          matchedSpan: initialVariant,
+          confidence: 0.85,
+        };
       }
-    }
-  }
-
-  // 5. Distinct non-ambiguous single surname match (Confidence: 0.75)
-  if (player.lastName && player.lastName.length >= 5) {
-    const normLast = normalizeText(player.lastName);
-    if (!AMBIGUOUS_SURNAMES.has(normLast) && containsWord(normText, normLast)) {
-      return { matched: true, confidence: 0.75, matchedAlias: player.lastName };
     }
   }
 
   return { matched: false, confidence: 0 };
 }
 
-// ─── Dynamic Candidate Player Name Extraction (NER) ─────────────────────────
+// ─── Non-Player Entity Blacklist ───────────────────────────────────────────
 
-const KNOWN_CLUBS_AND_ORGANIZATIONS = [
+export const KNOWN_CLUBS_AND_ORGANIZATIONS = [
   'galatasaray',
   'fenerbahce',
   'besiktas',
@@ -212,6 +221,7 @@ const KNOWN_CLUBS_AND_ORGANIZATIONS = [
   'lazio',
   'atalanta',
   'fiorentina',
+  'bologna',
   'psg',
   'paris saint germain',
   'paris saint-germain',
@@ -237,6 +247,7 @@ const KNOWN_CLUBS_AND_ORGANIZATIONS = [
   'bayer leverkusen',
   'leverkusen',
   'frankfurt',
+  'eintracht frankfurt',
   'fluminense',
   'flamengo',
   'palmeiras',
@@ -266,7 +277,7 @@ const KNOWN_CLUBS_AND_ORGANIZATIONS = [
   'bbc sport',
 ];
 
-const NON_PLAYER_ENTITIES = new Set([
+export const NON_PLAYER_ENTITIES = new Set([
   ...KNOWN_CLUBS_AND_ORGANIZATIONS,
   // Competitions & Stadiums
   'super lig',
@@ -289,18 +300,24 @@ const NON_PLAYER_ENTITIES = new Set([
   'dunya kupasi',
   'dunya kupas',
   'avrupa sampiyonasi',
-  // Managers & Officials
+  // Managers & Officials (Non-players)
   'okan buruk',
+  'buruk',
   'dursun ozbek',
+  'ozbek',
   'erden timur',
   'maruf gunes',
   'cenk ergun',
   'mikel arteta',
+  'arteta',
   'erik ten hag',
   'pep guardiola',
   'jose mourinho',
+  'mourinho',
   'carlo ancelotti',
+  'ancelotti',
   'ruben amorim',
+  'amorim',
   'arda turan',
   'fatih terim',
   'senol gunes',
@@ -324,6 +341,9 @@ const NON_PLAYER_ENTITIES = new Set([
   'flas gelisme',
   'sicak temas',
   'tarihi anlasma',
+  'devam',
+  'detaylar',
+  'haber',
   'portekizli',
   'brezilyali',
   'arjantinli',
@@ -381,36 +401,32 @@ function stripClubPrefixes(candidate: string): string {
 }
 
 /**
- * Extract candidate proper names (Capitalized player names) from news text.
- * Automatically cleans club prefixes and filters out non-player entities.
+ * Extract candidate person spans from news text with exact character positions.
  */
-export function extractCandidateNames(rawText: string): string[] {
+export function extractCandidateSpans(rawText: string): CandidateTextSpan[] {
   if (!rawText) return [];
-
-  // Strip apostrophe suffixes (e.g. "Osimhen'e", "Martinelli'nin", "Rashford'u")
-  const cleanedForNER = rawText.replace(/['’][a-zçğıöşüA-ZÇĞİÖŞÜ]+/g, '');
 
   // Match 2 to 3 capitalized words (e.g. "Gabriel Martinelli", "Marcus Rashford", "Rafael Leao")
   const multiWordRegex = /\b([A-ZÇĞİÖŞÜ][a-zçğıöşü]+(?:\s+[A-ZÇĞİÖŞÜ][a-zçğıöşü]+){1,2})\b/g;
-  const matches = cleanedForNER.match(multiWordRegex) || [];
+  const spans: CandidateTextSpan[] = [];
+  let match: RegExpExecArray | null;
 
-  const uniqueCandidates = new Set<string>();
-
-  for (const rawCandidate of matches) {
-    const stripped = stripClubPrefixes(rawCandidate);
+  while ((match = multiWordRegex.exec(rawText)) !== null) {
+    const rawSpan = match[1];
+    const stripped = stripClubPrefixes(rawSpan);
     const norm = normalizeText(stripped);
 
     if (norm.length < 5) continue;
     if (NON_PLAYER_ENTITIES.has(norm)) continue;
     if (AMBIGUOUS_SURNAMES.has(norm)) continue;
 
-    // Check if stripped name contains non-player phrases or club names
     const parts = stripped.split(/\s+/);
     if (parts.length >= 2 && parts.length <= 3) {
       const isBlacklisted = parts.some((part) => {
         const pNorm = normalizeText(part);
         return (
           KNOWN_CLUBS_AND_ORGANIZATIONS.includes(pNorm) ||
+          NON_PLAYER_ENTITIES.has(pNorm) ||
           pNorm === 'galatasaray' ||
           pNorm === 'fenerbahce' ||
           pNorm === 'besiktas' ||
@@ -426,10 +442,15 @@ export function extractCandidateNames(rawText: string): string[] {
       });
 
       if (!isBlacklisted) {
-        uniqueCandidates.add(stripped.trim());
+        spans.push({
+          rawText: stripped,
+          start: match.index,
+          end: match.index + rawSpan.length,
+          normalizedCandidate: norm,
+        });
       }
     }
   }
 
-  return Array.from(uniqueCandidates);
+  return spans;
 }
