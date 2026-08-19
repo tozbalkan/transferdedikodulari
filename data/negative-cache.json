@@ -1,0 +1,767 @@
+{
+  "entries": {
+    "transfer": {
+      "normalizedQuery": "transfer",
+      "status": "NON_PLAYER",
+      "reason": "Matched generic term \"transfer\"",
+      "cachedAt": 1787163771286,
+      "expiresAt": 1787768571286
+    },
+    "cimbom": {
+      "normalizedQuery": "cimbom",
+      "status": "NON_PLAYER",
+      "reason": "Matched generic term \"cimbom\"",
+      "cachedAt": 1787163771287,
+      "expiresAt": 1787768571287
+    },
+    "victor osimhen": {
+      "normalizedQuery": "victor osimhen",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344147,
+      "expiresAt": 1787206544147
+    },
+    "transferde": {
+      "normalizedQuery": "transferde",
+      "status": "NON_PLAYER",
+      "reason": "Matched generic term \"transferde\"",
+      "cachedAt": 1787163771286,
+      "expiresAt": 1787768571286
+    },
+    "euro": {
+      "normalizedQuery": "euro",
+      "status": "NON_PLAYER",
+      "reason": "Matched generic term \"euro\"",
+      "cachedAt": 1787163771285,
+      "expiresAt": 1787768571285
+    },
+    "osimhen": {
+      "normalizedQuery": "osimhen",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344148,
+      "expiresAt": 1787206544148
+    },
+    "umut erdem": {
+      "normalizedQuery": "umut erdem",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344148,
+      "expiresAt": 1787206544148
+    },
+    "lucas torreira": {
+      "normalizedQuery": "lucas torreira",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344148,
+      "expiresAt": 1787206544148
+    },
+    "wilfried singo": {
+      "normalizedQuery": "wilfried singo",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344148,
+      "expiresAt": 1787206544148
+    },
+    "rodrigo mora": {
+      "normalizedQuery": "rodrigo mora",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344149,
+      "expiresAt": 1787206544149
+    },
+    "ermedin demirovic": {
+      "normalizedQuery": "ermedin demirovic",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344149,
+      "expiresAt": 1787206544149
+    },
+    "galatasaraylilar": {
+      "normalizedQuery": "galatasaraylilar",
+      "status": "NON_PLAYER",
+      "reason": "Matched suffix demonym \"galatasaraylilar\"",
+      "cachedAt": 1787163771284,
+      "expiresAt": 1787768571284
+    },
+    "uruguayl": {
+      "normalizedQuery": "uruguayl",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344149,
+      "expiresAt": 1787206544149
+    },
+    "danimarkal": {
+      "normalizedQuery": "danimarkal",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344149,
+      "expiresAt": 1787206544149
+    },
+    "rusya": {
+      "normalizedQuery": "rusya",
+      "status": "NON_PLAYER",
+      "reason": "Matched geographic/demonym \"rusya\"",
+      "cachedAt": 1787163771283,
+      "expiresAt": 1787768571283
+    },
+    "nijeryal": {
+      "normalizedQuery": "nijeryal",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344150,
+      "expiresAt": 1787206544150
+    },
+    "hazirlik": {
+      "normalizedQuery": "hazirlik",
+      "status": "NON_PLAYER",
+      "reason": "Matched generic term \"hazirlik\"",
+      "cachedAt": 1787163771287,
+      "expiresAt": 1787768571287
+    },
+    "bosnak": {
+      "normalizedQuery": "bosnak",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344151,
+      "expiresAt": 1787206544151
+    },
+    "stuttgart": {
+      "normalizedQuery": "stuttgart",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344151,
+      "expiresAt": 1787206544151
+    },
+    "ismaila sarr": {
+      "normalizedQuery": "ismaila sarr",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344151,
+      "expiresAt": 1787206544151
+    },
+    "kadrosunu": {
+      "normalizedQuery": "kadrosunu",
+      "status": "NON_PLAYER",
+      "reason": "Matched generic term \"kadrosunu\"",
+      "cachedAt": 1787163771276,
+      "expiresAt": 1787768571276
+    },
+    "uzun": {
+      "normalizedQuery": "uzun",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344152,
+      "expiresAt": 1787206544152
+    },
+    "forvet": {
+      "normalizedQuery": "forvet",
+      "status": "NON_PLAYER",
+      "reason": "Matched generic term \"forvet\"",
+      "cachedAt": 1787163771281,
+      "expiresAt": 1787768571281
+    },
+    "spor": {
+      "normalizedQuery": "spor",
+      "status": "NON_PLAYER",
+      "reason": "Matched generic term \"spor\"",
+      "cachedAt": 1787163771276,
+      "expiresAt": 1787768571276
+    },
+    "mora": {
+      "normalizedQuery": "mora",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344153,
+      "expiresAt": 1787206544153
+    },
+    "torreira": {
+      "normalizedQuery": "torreira",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344153,
+      "expiresAt": 1787206544153
+    },
+    "sozlesme": {
+      "normalizedQuery": "sozlesme",
+      "status": "NON_PLAYER",
+      "reason": "Matched generic term \"sozlesme\"",
+      "cachedAt": 1787163771282,
+      "expiresAt": 1787768571282
+    },
+    "burnley": {
+      "normalizedQuery": "burnley",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344154,
+      "expiresAt": 1787206544154
+    },
+    "lesley ugochukwu": {
+      "normalizedQuery": "lesley ugochukwu",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344154,
+      "expiresAt": 1787206544154
+    },
+    "besikta": {
+      "normalizedQuery": "besikta",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344154,
+      "expiresAt": 1787206544154
+    },
+    "jhon lucumi": {
+      "normalizedQuery": "jhon lucumi",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344155,
+      "expiresAt": 1787206544155
+    },
+    "serie": {
+      "normalizedQuery": "serie",
+      "status": "NON_PLAYER",
+      "reason": "Matched generic term \"serie\"",
+      "cachedAt": 1787163771279,
+      "expiresAt": 1787768571279
+    },
+    "gelecek": {
+      "normalizedQuery": "gelecek",
+      "status": "NON_PLAYER",
+      "reason": "Matched generic term \"gelecek\"",
+      "cachedAt": 1787163771277,
+      "expiresAt": 1787768571277
+    },
+    "hakan calhanoglu": {
+      "normalizedQuery": "hakan calhanoglu",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344156,
+      "expiresAt": 1787206544156
+    },
+    "kongolu": {
+      "normalizedQuery": "kongolu",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344156,
+      "expiresAt": 1787206544156
+    },
+    "turk": {
+      "normalizedQuery": "turk",
+      "status": "NON_PLAYER",
+      "reason": "Matched geographic/demonym \"turk\"",
+      "cachedAt": 1787163771279,
+      "expiresAt": 1787768571279
+    },
+    "transferin": {
+      "normalizedQuery": "transferin",
+      "status": "NON_PLAYER",
+      "reason": "Matched generic term \"transferin\"",
+      "cachedAt": 1787163771281,
+      "expiresAt": 1787768571281
+    },
+    "hollandal": {
+      "normalizedQuery": "hollandal",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344157,
+      "expiresAt": 1787206544157
+    },
+    "singo": {
+      "normalizedQuery": "singo",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344157,
+      "expiresAt": 1787206544157
+    },
+    "ramy bensebaini": {
+      "normalizedQuery": "ramy bensebaini",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344158,
+      "expiresAt": 1787206544158
+    },
+    "malick fofana": {
+      "normalizedQuery": "malick fofana",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344158,
+      "expiresAt": 1787206544158
+    },
+    "mauro icardi": {
+      "normalizedQuery": "mauro icardi",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344158,
+      "expiresAt": 1787206544158
+    },
+    "renato veiga": {
+      "normalizedQuery": "renato veiga",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344158,
+      "expiresAt": 1787206544158
+    },
+    "manisa": {
+      "normalizedQuery": "manisa",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344159,
+      "expiresAt": 1787206544159
+    },
+    "kevin de bruyne": {
+      "normalizedQuery": "kevin de bruyne",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344159,
+      "expiresAt": 1787206544159
+    },
+    "fabrizio": {
+      "normalizedQuery": "fabrizio",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344159,
+      "expiresAt": 1787206544159
+    },
+    "jonathan david": {
+      "normalizedQuery": "jonathan david",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344160,
+      "expiresAt": 1787206544160
+    },
+    "galaasaray": {
+      "normalizedQuery": "galaasaray",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344160,
+      "expiresAt": 1787206544160
+    },
+    "aslan sar": {
+      "normalizedQuery": "aslan sar",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344160,
+      "expiresAt": 1787206544160
+    },
+    "harder": {
+      "normalizedQuery": "harder",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344160,
+      "expiresAt": 1787206544160
+    },
+    "leipzig": {
+      "normalizedQuery": "leipzig",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344160,
+      "expiresAt": 1787206544160
+    },
+    "conrad harder": {
+      "normalizedQuery": "conrad harder",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344161,
+      "expiresAt": 1787206544161
+    },
+    "noa lang": {
+      "normalizedQuery": "noa lang",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344161,
+      "expiresAt": 1787206544161
+    },
+    "tutto mercato": {
+      "normalizedQuery": "tutto mercato",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344161,
+      "expiresAt": 1787206544161
+    },
+    "dimitri conti": {
+      "normalizedQuery": "dimitri conti",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344161,
+      "expiresAt": 1787206544161
+    },
+    "bunu": {
+      "normalizedQuery": "bunu",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344162,
+      "expiresAt": 1787206544162
+    },
+    "ponomarenko": {
+      "normalizedQuery": "ponomarenko",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344162,
+      "expiresAt": 1787206544162
+    },
+    "matviy ponomarenko": {
+      "normalizedQuery": "matviy ponomarenko",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344162,
+      "expiresAt": 1787206544162
+    },
+    "george gardi": {
+      "normalizedQuery": "george gardi",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344162,
+      "expiresAt": 1787206544162
+    },
+    "durgun": {
+      "normalizedQuery": "durgun",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344163,
+      "expiresAt": 1787206544163
+    },
+    "thiago almada": {
+      "normalizedQuery": "thiago almada",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344163,
+      "expiresAt": 1787206544163
+    },
+    "ligi": {
+      "normalizedQuery": "ligi",
+      "status": "NON_PLAYER",
+      "reason": "Matched generic term \"ligi\"",
+      "cachedAt": 1787163771277,
+      "expiresAt": 1787768571277
+    },
+    "real": {
+      "normalizedQuery": "real",
+      "status": "NON_PLAYER",
+      "reason": "Matched generic term \"real\"",
+      "cachedAt": 1787163771277,
+      "expiresAt": 1787768571277
+    },
+    "transferdeki": {
+      "normalizedQuery": "transferdeki",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344164,
+      "expiresAt": 1787206544164
+    },
+    "fabrizio romano": {
+      "normalizedQuery": "fabrizio romano",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344166,
+      "expiresAt": 1787206544166
+    },
+    "teklif": {
+      "normalizedQuery": "teklif",
+      "status": "NON_PLAYER",
+      "reason": "Matched generic term \"teklif\"",
+      "cachedAt": 1787163771278,
+      "expiresAt": 1787768571278
+    },
+    "rusya milli takim": {
+      "normalizedQuery": "rusya milli takim",
+      "status": "NON_PLAYER",
+      "reason": "All tokens are generic terms in \"rusya milli takim\"",
+      "cachedAt": 1787163771279,
+      "expiresAt": 1787768571279
+    },
+    "menajerlerden": {
+      "normalizedQuery": "menajerlerden",
+      "status": "NON_PLAYER",
+      "reason": "Matched generic term \"menajerlerden\"",
+      "cachedAt": 1787163771279,
+      "expiresAt": 1787768571279
+    },
+    "kisa": {
+      "normalizedQuery": "kisa",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344167,
+      "expiresAt": 1787206544167
+    },
+    "baris alper": {
+      "normalizedQuery": "baris alper",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344168,
+      "expiresAt": 1787206544168
+    },
+    "baris alper yilmaz": {
+      "normalizedQuery": "baris alper yilmaz",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344168,
+      "expiresAt": 1787206544168
+    },
+    "ismail jakobs": {
+      "normalizedQuery": "ismail jakobs",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344168,
+      "expiresAt": 1787206544168
+    },
+    "roland sallai": {
+      "normalizedQuery": "roland sallai",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344168,
+      "expiresAt": 1787206544168
+    },
+    "gabriel sara": {
+      "normalizedQuery": "gabriel sara",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344169,
+      "expiresAt": 1787206544169
+    },
+    "galatasarayla": {
+      "normalizedQuery": "galatasarayla",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344170,
+      "expiresAt": 1787206544170
+    },
+    "taraflar": {
+      "normalizedQuery": "taraflar",
+      "status": "NON_PLAYER",
+      "reason": "Matched generic term \"taraflar\"",
+      "cachedAt": 1787163771280,
+      "expiresAt": 1787768571280
+    },
+    "forvete": {
+      "normalizedQuery": "forvete",
+      "status": "NON_PLAYER",
+      "reason": "Matched generic term \"forvete\"",
+      "cachedAt": 1787163771280,
+      "expiresAt": 1787768571280
+    },
+    "sakin": {
+      "normalizedQuery": "sakin",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344172,
+      "expiresAt": 1787206544172
+    },
+    "yapilan": {
+      "normalizedQuery": "yapilan",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344173,
+      "expiresAt": 1787206544173
+    },
+    "kadrosuna": {
+      "normalizedQuery": "kadrosuna",
+      "status": "NON_PLAYER",
+      "reason": "Matched generic term \"kadrosuna\"",
+      "cachedAt": 1787163771282,
+      "expiresAt": 1787768571282
+    },
+    "abdessamad": {
+      "normalizedQuery": "abdessamad",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344173,
+      "expiresAt": 1787206544173
+    },
+    "ez abde": {
+      "normalizedQuery": "ez abde",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344173,
+      "expiresAt": 1787206544173
+    },
+    "hucum": {
+      "normalizedQuery": "hucum",
+      "status": "NON_PLAYER",
+      "reason": "Matched generic term \"hucum\"",
+      "cachedAt": 1787163771282,
+      "expiresAt": 1787768571282
+    },
+    "betis": {
+      "normalizedQuery": "betis",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344174,
+      "expiresAt": 1787206544174
+    },
+    "fasl": {
+      "normalizedQuery": "fasl",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344174,
+      "expiresAt": 1787206544174
+    },
+    "abdessamed ezzalzouli": {
+      "normalizedQuery": "abdessamed ezzalzouli",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344175,
+      "expiresAt": 1787206544175
+    },
+    "sonunda": {
+      "normalizedQuery": "sonunda",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344175,
+      "expiresAt": 1787206544175
+    },
+    "kimse": {
+      "normalizedQuery": "kimse",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344175,
+      "expiresAt": 1787206544175
+    },
+    "brezilyal": {
+      "normalizedQuery": "brezilyal",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344176,
+      "expiresAt": 1787206544176
+    },
+    "mac allister": {
+      "normalizedQuery": "mac allister",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344177,
+      "expiresAt": 1787206544177
+    },
+    "alexis mac allister": {
+      "normalizedQuery": "alexis mac allister",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344177,
+      "expiresAt": 1787206544177
+    },
+    "gecen": {
+      "normalizedQuery": "gecen",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344177,
+      "expiresAt": 1787206544177
+    },
+    "eylul": {
+      "normalizedQuery": "eylul",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344178,
+      "expiresAt": 1787206544178
+    },
+    "mathys tel": {
+      "normalizedQuery": "mathys tel",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344178,
+      "expiresAt": 1787206544178
+    },
+    "moskova": {
+      "normalizedQuery": "moskova",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344178,
+      "expiresAt": 1787206544178
+    },
+    "gabriel mec": {
+      "normalizedQuery": "gabriel mec",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344179,
+      "expiresAt": 1787206544179
+    },
+    "golc": {
+      "normalizedQuery": "golc",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344179,
+      "expiresAt": 1787206544179
+    },
+    "ligin": {
+      "normalizedQuery": "ligin",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344179,
+      "expiresAt": 1787206544179
+    },
+    "tangocu": {
+      "normalizedQuery": "tangocu",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344179,
+      "expiresAt": 1787206544179
+    },
+    "bircok": {
+      "normalizedQuery": "bircok",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344180,
+      "expiresAt": 1787206544180
+    },
+    "yunan": {
+      "normalizedQuery": "yunan",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344180,
+      "expiresAt": 1787206544180
+    },
+    "yonetim": {
+      "normalizedQuery": "yonetim",
+      "status": "NON_PLAYER",
+      "reason": "Matched generic term \"yonetim\"",
+      "cachedAt": 1787163771286,
+      "expiresAt": 1787768571286
+    },
+    "rekor": {
+      "normalizedQuery": "rekor",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344181,
+      "expiresAt": 1787206544181
+    },
+    "rangers": {
+      "normalizedQuery": "rangers",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344182,
+      "expiresAt": 1787206544182
+    },
+    "menajerler": {
+      "normalizedQuery": "menajerler",
+      "status": "NON_PLAYER",
+      "reason": "Matched generic term \"menajerler\"",
+      "cachedAt": 1787163771287,
+      "expiresAt": 1787768571287
+    },
+    "belcikal": {
+      "normalizedQuery": "belcikal",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344183,
+      "expiresAt": 1787206544183
+    },
+    "orta": {
+      "normalizedQuery": "orta",
+      "status": "NOT_FOUND",
+      "reason": "Candidate unresolved upstream",
+      "cachedAt": 1787163344183,
+      "expiresAt": 1787206544183
+    },
+    "savunma": {
+      "normalizedQuery": "savunma",
+      "status": "NON_PLAYER",
+      "reason": "Matched generic term \"savunma\"",
+      "cachedAt": 1787163771287,
+      "expiresAt": 1787768571287
+    },
+    "yerli": {
+      "normalizedQuery": "yerli",
+      "status": "NON_PLAYER",
+      "reason": "Matched generic term \"yerli\"",
+      "cachedAt": 1787163771287,
+      "expiresAt": 1787768571287
+    }
+  }
+}

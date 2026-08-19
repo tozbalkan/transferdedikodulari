@@ -10,21 +10,25 @@ import type {
 import { fetchAllFeeds } from '@/lib/news/rss';
 import { FALLBACK_REAL_NEWS } from '@/lib/news/fallback-news';
 import { deduplicateArticles, isGalatasarayRelevant, type TransferDirection } from '@/lib/news/parser';
-import { extractCandidateSpans, matchPlayerWithSpan } from '@/lib/players/matcher';
-
-import { globalPlayerRegistry, type RegisteredPlayer } from '@/lib/players/registry';
+import { extractCandidateSpans, matchPlayerWithSpan, normalizeText } from '@/lib/players/matcher';
+import { validatePlayerCandidate } from '@/lib/players/validator';
+import { clusterCandidateMentions, type CandidateMention } from '@/lib/players/cluster';
+import { persistentPlayerRegistry } from '@/lib/players/persistent-registry';
+import { negativeResolutionCache } from '@/lib/players/negative-cache';
 import { calculateConfidence, calculateRumorScore, calculateTrend } from '@/lib/rumor/scorer';
 import {
   getGalatasaraySquadDetailed,
   getApiFootballKey,
   getResolutionTraces,
+  getApiFootballRequestStats,
+  resetRunRequestBudget,
+  resolvePlayerIdentity,
   invalidateCache,
   CURRENT_SEASON,
   GALATASARAY_DEFAULT_TEAM_ID,
   type SquadResolutionStatus,
   type PlayerResolutionTrace,
 } from '@/lib/api-football';
-import { SerperSearchNewsAdapter } from '@/lib/news/search-adapter';
 
 export const RUMOR_WINDOW_DAYS = 7;
 
@@ -37,6 +41,7 @@ export type RejectionReason =
   | 'UNRESOLVED_PLAYER'
   | 'NOT_TRANSFER_INTENT'
   | 'DUPLICATE'
+  | 'PRE_API_REJECTED'
   | 'SQUAD_UNAVAILABLE';
 
 export interface RejectedRumorDiagnostic {
@@ -65,6 +70,29 @@ export interface SafeDiagnostics {
   uniqueArticles: number;
   candidateSpansExtracted: number;
   uniqueNormalizedCandidates: number;
+  apiFootballRequests: {
+    total: number;
+    budget: number;
+    budgetRemaining: number;
+    circuitBreakerState: 'CLOSED' | 'OPEN';
+    rateLimitType?: string;
+  };
+  candidatePipeline: {
+    extracted: number;
+    preApiRejected: number;
+    clustered: number;
+    registryHits: number;
+    negativeCacheHits: number;
+    apiResolutionAttempted: number;
+    apiResolutionVerified: number;
+    apiResolutionUnresolved: number;
+  };
+  registry: {
+    playerCount: number;
+    persistent: boolean;
+    hits: number;
+    misses: number;
+  };
   identityResolution: {
     attempted: number;
     verified: number;
@@ -82,13 +110,15 @@ export interface SafeDiagnostics {
     endpoint: string;
     httpStatus: number;
     count: number;
+    liveOrCached: 'LIVE' | 'CACHED';
     rawResponseCount: number;
     paginationPages: number;
     goalkeepersCount: number;
     defendersCount: number;
     midfieldersCount: number;
     forwardsCount: number;
-    fetchedAt: string;
+    verifiedAt: string;
+    ageSeconds: number;
     cacheHit: boolean;
     mismatchReport?: string;
   };
@@ -99,6 +129,7 @@ export interface SafeDiagnostics {
     unresolved: number;
     lowConfidence: number;
     stale: number;
+    preApiRejected: number;
   };
   incomingBeforeSquadFilter: number;
   activeIncoming: number;
@@ -128,13 +159,11 @@ interface PlayerArticleBucket {
     sourceCount: number;
     sources: string[];
     matchConfidence: number;
-    direction: TransferDirection;
   }>;
 }
 
 /**
- * Check if a transfer rumor is an active, valid INCOMING transfer rumor
- * evaluated against complete authoritative squad data, ID comparison, and fail-closed status.
+ * Filter out rumors that do not represent active incoming transfer targets.
  */
 export function isActiveIncomingRumor(
   rumor: TransferRumor,
@@ -143,139 +172,158 @@ export function isActiveIncomingRumor(
   squadStatus: SquadResolutionStatus,
   windowDays: number = RUMOR_WINDOW_DAYS,
 ): { isActive: boolean; reason?: RejectionReason; details?: string } {
-  // 1. Fail-closed: Only VERIFIED squad resolution authorizes incoming rumors
+  // 1. Squad Verification Status Check: Fail-Closed
   if (squadStatus !== 'VERIFIED') {
     return {
       isActive: false,
       reason: 'SQUAD_UNAVAILABLE',
-      details: `Galatasaray squad verification status is ${squadStatus}. External squad data unavailable or incomplete.`,
+      details: `Squad resolution status is "${squadStatus}". Failing closed until squad is verified.`,
     };
   }
 
-  const externalId = typeof rumor.player.externalId === 'number' ? rumor.player.externalId : undefined;
-  const isInSquadList = externalId !== undefined && currentSquadMap.has(externalId);
-  const isGalatasarayClub =
-    rumor.player.currentClubId === GALATASARAY_DEFAULT_TEAM_ID ||
-    (typeof rumor.player.currentClub === 'string' &&
-      rumor.player.currentClub.toLowerCase().includes('galatasaray'));
+  // 2. Exact Numeric External ID Match against Galatasaray current squad
+  if (typeof rumor.player.externalId === 'number') {
+    const squadMember = currentSquadMap.get(rumor.player.externalId);
+    if (squadMember) {
+      return {
+        isActive: false,
+        reason: 'CURRENT_SQUAD',
+        details: `${rumor.player.name} (ID: ${rumor.player.externalId}) is an active member of Galatasaray squad (${squadMember.position}).`,
+      };
+    }
+  }
 
-  // 2. Primary: Numeric external ID in current squad and currentClub is Galatasaray
-  if (isInSquadList && isGalatasarayClub) {
+  // 3. Name/Alias Match against Galatasaray current squad
+  const normPlayerName = normalizeText(rumor.player.name);
+  if (currentSquadNames.has(normPlayerName)) {
     return {
       isActive: false,
       reason: 'CURRENT_SQUAD',
-      details: `${rumor.player.name} (External ID: ${externalId}) is in current Galatasaray squad.`,
+      details: `${rumor.player.name} matches a name in the Galatasaray squad roster.`,
     };
   }
 
-  // 3. Contradiction cross-check:
-  // If squad list does not contain player, but player's currentClub is Galatasaray:
-  if (!isInSquadList && isGalatasarayClub) {
+  for (const alias of rumor.player.aliases) {
+    const normAlias = normalizeText(alias);
+    if (currentSquadNames.has(normAlias)) {
+      return {
+        isActive: false,
+        reason: 'CURRENT_SQUAD',
+        details: `Player alias "${alias}" matches an active Galatasaray player.`,
+      };
+    }
+  }
+
+  // 4. Data Conflict Check: If current club is Galatasaray, reject as existing player
+  if (
+    rumor.player.currentClub &&
+    (rumor.player.currentClub.toLowerCase().includes('galatasaray') ||
+      rumor.player.currentClubId === GALATASARAY_DEFAULT_TEAM_ID)
+  ) {
     return {
       isActive: false,
       reason: 'DATA_CONFLICT',
-      details: `Data conflict: ${rumor.player.name} (ID: ${externalId}) is not in squad list but currentClub is reported as ${rumor.player.currentClub} (ID: ${rumor.player.currentClubId}).`,
+      details: `${rumor.player.name} has current club "${rumor.player.currentClub}" (ID: ${rumor.player.currentClubId}), conflicting with incoming transfer status.`,
     };
   }
 
-  // If squad list contains player, but player's currentClub is reported as another club:
-  if (isInSquadList && !isGalatasarayClub) {
-    return {
-      isActive: false,
-      reason: 'DATA_CONFLICT',
-      details: `Data conflict: ${rumor.player.name} (ID: ${externalId}) is listed in Galatasaray squad but currentClub is reported as ${rumor.player.currentClub} (ID: ${rumor.player.currentClubId}).`,
-    };
+  // 5. Direction Check
+  if (rumor.evidence && rumor.evidence.length > 0) {
+    const isOutgoing = rumor.evidence.every((e) => e.candidateTextSpan.includes('ayrılıyor') || e.candidateTextSpan.includes('veda'));
+    if (isOutgoing) {
+      return {
+        isActive: false,
+        reason: 'OUTGOING',
+        details: `${rumor.player.name} rumors indicate outgoing transfer.`,
+      };
+    }
   }
 
-  // 4. Secondary fallback: Normalized Name & Aliases matching against current squad
-  const playerNameLower = rumor.player.name.toLowerCase();
-  const isCurrentPlayerByName =
-    currentSquadNames.has(playerNameLower) ||
-    rumor.player.aliases?.some((alias) => currentSquadNames.has(alias.toLowerCase()));
+  // 6. Recency Window Check
+  const now = new Date();
+  const windowStart = new Date(now.getTime() - windowDays * 24 * 60 * 60 * 1000);
+  const recentArticles = rumor.latestNews.filter((item) => {
+    const articleDate = new Date(item.publishedAt);
+    return !isNaN(articleDate.getTime()) && articleDate >= windowStart;
+  });
 
-  if (isCurrentPlayerByName) {
-    return {
-      isActive: false,
-      reason: 'CURRENT_SQUAD',
-      details: `${rumor.player.name} matches resolved current Galatasaray squad roster by name.`,
-    };
-  }
-
-  // 5. Recency window check
-  const latestDate = rumor.latestNews[0]?.publishedAt
-    ? new Date(rumor.latestNews[0].publishedAt).getTime()
-    : 0;
-  const now = Date.now();
-  const maxAgeMs = windowDays * 24 * 60 * 60 * 1000;
-
-  if (latestDate > 0 && now - latestDate > maxAgeMs) {
+  if (recentArticles.length === 0 && rumor.latestNews.length > 0) {
     return {
       isActive: false,
       reason: 'STALE',
-      details: `Latest article is older than ${windowDays} days.`,
+      details: `No news within the active ${windowDays}-day rumor window.`,
     };
   }
 
-  // 6. Confidence threshold check
-  if ((rumor.confidenceScore ?? 0) < 0.35) {
+  // 7. Minimum Confidence Check
+  if (rumor.confidenceScore !== undefined && rumor.confidenceScore < 0.40) {
     return {
       isActive: false,
       reason: 'LOW_CONFIDENCE',
-      details: `Confidence score (${rumor.confidenceScore}) below threshold (0.35).`,
+      details: `Confidence score (${rumor.confidenceScore}) below threshold 0.40.`,
     };
   }
 
   return { isActive: true };
 }
 
-export interface AggregateRumorOptions {
-  forceRefresh?: boolean;
-}
-
 /**
- * Execute the complete live real data pipeline:
- * Article Ingestion -> Exact Text-Span NER -> Unique Candidate Deduplication -> Multi-Strategy Entity Resolution -> ID-First Squad Filtering -> Scoring
+ * Main rumor aggregation pipeline with Phase 3.13.3 optimizations:
+ * - Strict pre-API validation
+ * - Pre-API candidate clustering
+ * - Persistent player registry
+ * - Negative resolution cache
+ * - Request budget and rate-limit circuit breaker
  */
-export async function aggregateLiveRumors(options?: AggregateRumorOptions): Promise<AggregationResult> {
-  const rejectedDiagnostics: RejectedRumorDiagnostic[] = [];
-  const discoveredCandidates: CandidateDiscoveryDiagnostic[] = [];
-
-  if (options?.forceRefresh) {
-    globalPlayerRegistry.clear();
+export async function aggregateLiveRumors(forceRefresh = false): Promise<AggregationResult> {
+  if (forceRefresh) {
     invalidateCache();
   }
 
-  // Step 1: Initialize squad from cache or dynamic resolution
-  await globalPlayerRegistry.initializeSquad();
+  resetRunRequestBudget();
+
+  const rejectedDiagnostics: RejectedRumorDiagnostic[] = [];
+  const discoveredCandidates: CandidateDiscoveryDiagnostic[] = [];
+
+  // Step 1: Ingest live Galatasaray 2026 squad snapshot
   const squadResolution = await getGalatasaraySquadDetailed(undefined, CURRENT_SEASON);
+  const currentSquad = squadResolution.squad;
 
   const currentSquadMap = new Map<number, Player>();
   const currentSquadNames = new Set<string>();
 
-  squadResolution.squad.forEach((p) => {
-    if (typeof p.externalId === 'number') {
-      currentSquadMap.set(p.externalId, p);
+  for (const player of currentSquad) {
+    if (typeof player.externalId === 'number') {
+      currentSquadMap.set(player.externalId, player);
     }
-    currentSquadNames.add(p.name.toLowerCase());
-    p.aliases.forEach((a) => currentSquadNames.add(a.toLowerCase()));
-  });
+    currentSquadNames.add(normalizeText(player.name));
+    for (const alias of player.aliases) {
+      currentSquadNames.add(normalizeText(alias));
+    }
+  }
 
-  // Step 2: Ingest raw feeds from RSS & Search
-  const { items: rawNewsItems, health: sourceHealth } = await fetchAllFeeds();
+  // Step 2: Ingest Multi-Source Live News Feeds
+  const rssResult = await fetchAllFeeds();
+  let activeNewsItems = rssResult.items;
+  let sourceHealth = rssResult.health;
 
-  const searchAdapter = new SerperSearchNewsAdapter();
-  const searchArticles = await searchAdapter.fetchArticles(
-    'Galatasaray transfer haberleri',
-    RUMOR_WINDOW_DAYS,
-  );
+  if (activeNewsItems.length === 0) {
+    activeNewsItems = FALLBACK_REAL_NEWS;
+    sourceHealth = [
+      {
+        sourceId: 'fallback-snapshot',
+        name: 'Fallback Snapshot Data',
+        enabled: true,
+        success: true,
+        itemCount: FALLBACK_REAL_NEWS.length,
+        fetchedAt: new Date().toISOString(),
+      },
+    ];
+  }
 
-  const combinedRawItems = [...rawNewsItems, ...searchArticles];
-  const activeNewsItems = combinedRawItems.length > 0 ? combinedRawItems : FALLBACK_REAL_NEWS;
-
-  // Step 3: Filter for Galatasaray relevance and transfer intent
+  // Step 3: Filter Galatasaray-relevant articles
   const relevantRawItems = activeNewsItems.filter((item) => {
-    const content = 'content' in item && typeof item.content === 'string' ? item.content : undefined;
-    const rel = isGalatasarayRelevant(item.title, item.summary, content);
+    const rel = isGalatasarayRelevant(item.title, item.summary || item.content || '');
     if (!rel.isRelevant) {
       if (!rel.hasTransferIntent) {
         rejectedDiagnostics.push({
@@ -291,68 +339,123 @@ export async function aggregateLiveRumors(options?: AggregateRumorOptions): Prom
   // Step 4: Deduplicate multi-source news articles
   const uniqueArticles = deduplicateArticles(relevantRawItems);
 
-  // Step 5: Extract & Deduplicate Candidate Spans (Task 6)
-  const candidateSpansByArticle = new Map<string, Array<{ rawText: string; norm: string }>>();
-  const candidateFrequencyMap = new Map<string, { rawText: string; norm: string; count: number }>();
-  let extractedSpansCount = 0;
+  // Step 5: Extract & Pre-API Validate Candidate Spans
+  let totalExtractedSpansCount = 0;
+  let preApiRejectedCount = 0;
+  const validCandidateMentions: CandidateMention[] = [];
 
   for (const article of uniqueArticles) {
-    const spans = extractCandidateSpans(article.searchableText);
-    extractedSpansCount += spans.length;
-    const articleSpans: Array<{ rawText: string; norm: string }> = [];
+    const rawSpans = extractCandidateSpans(article.searchableText);
+    totalExtractedSpansCount += rawSpans.length;
 
-    for (const span of spans) {
-      articleSpans.push({ rawText: span.rawText, norm: span.normalizedCandidate });
-      const existing = candidateFrequencyMap.get(span.normalizedCandidate);
-      if (existing) {
-        existing.count++;
-      } else {
-        candidateFrequencyMap.set(span.normalizedCandidate, {
-          rawText: span.rawText,
-          norm: span.normalizedCandidate,
-          count: 1,
+    for (const span of rawSpans) {
+      const validation = validatePlayerCandidate(span.rawText);
+      if (!validation.isValid) {
+        preApiRejectedCount++;
+        negativeResolutionCache.set(
+          validation.normalizedCandidate,
+          'NON_PLAYER',
+          validation.details || validation.reason || 'Pre-API validation failed',
+        );
+        rejectedDiagnostics.push({
+          playerName: span.rawText,
+          reason: 'PRE_API_REJECTED',
+          details: `Pre-API validation: ${validation.reason} (${validation.details})`,
         });
+        continue;
       }
-    }
-    candidateSpansByArticle.set(article.canonicalId, articleSpans);
-  }
 
-  // Sort unique candidates by frequency so high-volume transfer targets resolve first
-  const sortedCandidates = Array.from(candidateFrequencyMap.values()).sort(
-    (a, b) => b.count - a.count,
-  );
-
-  // Step 6: Efficient Unique Candidate Resolution (Tasks 2, 3, 4, 5, 7)
-  const resolvedIdentityMap = new Map<string, RegisteredPlayer>(); // norm -> player
-  let identityAttempted = 0;
-  let identityVerified = 0;
-  let identityUnresolved = 0;
-
-  for (const candidate of sortedCandidates) {
-    identityAttempted++;
-    const resolved = await globalPlayerRegistry.resolveCandidatePlayer(candidate.rawText);
-
-    if (resolved && typeof resolved.externalId === 'number') {
-      identityVerified++;
-      resolvedIdentityMap.set(candidate.norm, resolved);
-    } else {
-      identityUnresolved++;
-      rejectedDiagnostics.push({
-        playerName: candidate.rawText,
-        reason: 'UNRESOLVED_PLAYER',
-        details: `Candidate "${candidate.rawText}" could not be authoritatively resolved to an API-Football player profile.`,
+      validCandidateMentions.push({
+        rawText: span.rawText,
+        norm: validation.normalizedCandidate,
+        articleId: article.canonicalId,
       });
     }
   }
 
+  // Step 6: Cluster Candidate Mentions Before Upstream API (Task 3)
+  const clusters = clusterCandidateMentions(validCandidateMentions);
 
-  // Current Club Lookup Stats (Task 7)
+  // Step 7: Identity Resolution (Persistent Registry -> Negative Cache -> Budgeted API)
+  const resolvedPlayerMap = new Map<string, Player>(); // norm or alias -> Player
+  let registryHitsCount = 0;
+  let negativeCacheHitsCount = 0;
+  let apiAttemptedCount = 0;
+  let apiVerifiedCount = 0;
+  let apiUnresolvedCount = 0;
+
+  for (const cluster of clusters) {
+    // A. Check persistent player registry
+    const registryPlayer = persistentPlayerRegistry.findPlayer(cluster.canonicalQuery);
+    if (registryPlayer && typeof registryPlayer.externalId === 'number') {
+      registryHitsCount++;
+      for (const normSpan of cluster.allNormalizedSpans) {
+        resolvedPlayerMap.set(normSpan, registryPlayer);
+      }
+      for (const rawSpan of cluster.allRawSpans) {
+        resolvedPlayerMap.set(normalizeText(rawSpan), registryPlayer);
+      }
+      continue;
+    }
+
+    // B. Check negative cache
+    const negEntry = negativeResolutionCache.get(cluster.normalizedQuery);
+    if (negEntry) {
+      negativeCacheHitsCount++;
+      rejectedDiagnostics.push({
+        playerName: cluster.canonicalQuery,
+        reason: 'UNRESOLVED_PLAYER',
+        details: `Negative cache hit (${negEntry.status}): ${negEntry.reason}`,
+      });
+      continue;
+    }
+
+    // C. Budget-limited live API resolution
+    apiAttemptedCount++;
+    const resolved = await resolvePlayerIdentity(cluster.canonicalQuery);
+
+    if (resolved && typeof resolved.id === 'number') {
+      apiVerifiedCount++;
+      const fullPlayer: Player = {
+        id: `api-football-${resolved.id}`,
+        externalId: resolved.id,
+        name: resolved.name,
+        firstName: resolved.firstname,
+        lastName: resolved.lastname,
+        position: resolved.position || 'MIDFIELDER',
+        currentClub: 'Unknown Club',
+        nationality: resolved.nationality,
+        age: resolved.age,
+        photo: resolved.photo,
+        aliases: Array.from(new Set([...cluster.allRawSpans, resolved.name])),
+        entityResolutionConfidence: resolved.identityScore,
+        lastResolvedAt: new Date().toISOString(),
+      };
+
+      for (const normSpan of cluster.allNormalizedSpans) {
+        resolvedPlayerMap.set(normSpan, fullPlayer);
+      }
+      for (const rawSpan of cluster.allRawSpans) {
+        resolvedPlayerMap.set(normalizeText(rawSpan), fullPlayer);
+      }
+    } else {
+      apiUnresolvedCount++;
+      negativeResolutionCache.set(cluster.normalizedQuery, 'NOT_FOUND', 'Candidate could not be resolved');
+      rejectedDiagnostics.push({
+        playerName: cluster.canonicalQuery,
+        reason: 'UNRESOLVED_PLAYER',
+        details: `Candidate "${cluster.canonicalQuery}" could not be resolved to an API-Football player profile.`,
+      });
+    }
+  }
+
+  // Current Club Lookup Stats
   const uniqueVerifiedExternalIds = new Set<number>();
   let clubAttempted = 0;
   let clubSucceeded = 0;
   let clubFailed = 0;
 
-  for (const player of resolvedIdentityMap.values()) {
+  for (const player of resolvedPlayerMap.values()) {
     if (typeof player.externalId === 'number' && !uniqueVerifiedExternalIds.has(player.externalId)) {
       uniqueVerifiedExternalIds.add(player.externalId);
       clubAttempted++;
@@ -364,16 +467,17 @@ export async function aggregateLiveRumors(options?: AggregateRumorOptions): Prom
     }
   }
 
-  // Step 7: Match Resolved Players to Article Buckets with Text-Span Evidence
+  // Step 8: Match Resolved Players to Article Buckets with Text-Span Evidence
   const playerBuckets = new Map<string, PlayerArticleBucket>();
 
   for (const article of uniqueArticles) {
     const articleEvidenceMap = new Map<string, { player: Player; evidence: RumorEvidence; confidence: number }>();
-    const articleSpans = candidateSpansByArticle.get(article.canonicalId) || [];
+    const rawSpans = extractCandidateSpans(article.searchableText);
 
-    // A. Match against unique resolved candidates from article spans
-    for (const span of articleSpans) {
-      const resolved = resolvedIdentityMap.get(span.norm);
+    for (const span of rawSpans) {
+      const norm = normalizeText(span.rawText);
+      const resolved = resolvedPlayerMap.get(norm);
+
       if (resolved) {
         discoveredCandidates.push({
           articleTitle: article.title,
@@ -411,8 +515,8 @@ export async function aggregateLiveRumors(options?: AggregateRumorOptions): Prom
       }
     }
 
-    // B. Also match against all currently registered players
-    for (const player of globalPlayerRegistry.getAllPlayers()) {
+    // Match against registered persistent players
+    for (const player of persistentPlayerRegistry.getAllPlayers()) {
       if (articleEvidenceMap.has(player.id)) continue;
       const match = matchPlayerWithSpan(article.searchableText, player);
       if (match.matched) {
@@ -450,98 +554,103 @@ export async function aggregateLiveRumors(options?: AggregateRumorOptions): Prom
         sourceCount: article.sourceCount,
         sources: article.sources,
         matchConfidence: confidence,
-        direction: article.direction,
       });
     }
   }
 
-  // Step 8: Compute metrics and rumors for verified players
+  // Step 9: Build and Score Transfer Rumors
   const allRumors: TransferRumor[] = [];
 
   for (const bucket of playerBuckets.values()) {
     const { player, articles, evidence } = bucket;
-    if (articles.length === 0) continue;
 
-    articles.sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
+    // Deduplicate articles for this player
+    const seenArticleIds = new Set<string>();
+    const uniquePlayerArticles: NewsItem[] = [];
+    const sourceTypes = new Set<string>();
 
-    const latestPublishedAt = articles[0]?.publishedAt || new Date().toISOString();
-    const uniqueArticleCount = articles.length;
-    const mentionCount = uniqueArticleCount;
+    for (const art of articles) {
+      if (!seenArticleIds.has(art.id)) {
+        seenArticleIds.add(art.id);
+        uniquePlayerArticles.push({
+          id: art.id,
+          title: art.title,
+          url: art.url,
+          source: art.source,
+          publishedAt: art.publishedAt,
+          summary: art.summary,
+          playerId: player.id,
+        });
+        art.sources.forEach((s) => sourceTypes.add(s));
+      }
+    }
 
-    let totalSourceCount = 0;
-    const sourceCountMap = new Map<string, number>();
-
-    articles.forEach((a) => {
-      totalSourceCount += a.sourceCount;
-      a.sources.forEach((src) => {
-        sourceCountMap.set(src, (sourceCountMap.get(src) || 0) + 1);
-      });
-    });
-
-    const sourcesList: RumorSourceInfo[] = Array.from(sourceCountMap.entries()).map(
-      ([name, count]) => ({
-        name,
-        type: 'PRESS',
-        articleCount: count,
-      }),
+    // Sort news by publishedAt descending
+    uniquePlayerArticles.sort(
+      (a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime(),
     );
 
-    const distribution: SourceDistribution = {
-      rss: totalSourceCount,
-      press: totalSourceCount,
-      x: 0,
-      forum: 0,
+    const mentionCount = evidence.length;
+    const uniqueArticleCount = uniquePlayerArticles.length;
+    const sourceCount = sourceTypes.size;
+
+    const sourceDistribution: SourceDistribution = {
+      rss: sourceTypes.has('RSS') ? 1 : 0,
+      press: sourceTypes.has('PRESS') ? 1 : 0,
+      x: sourceTypes.has('X') ? 1 : 0,
+      forum: sourceTypes.has('FORUM') ? 1 : 0,
     };
 
-    const avgMatchConfidence = articles.reduce((acc, a) => acc + a.matchConfidence, 0) / articles.length;
-
-    const rumorConfidence = calculateConfidence(
-      uniqueArticleCount,
-      totalSourceCount,
-      avgMatchConfidence,
-    );
-
-    const { score, recencyScore, sourceDiversityScore } = calculateRumorScore({
-      mentionCount,
-      uniqueArticleCount,
-      sourceCount: totalSourceCount,
-      distribution,
-      latestPublishedAt,
+    const sources: RumorSourceInfo[] = Array.from(sourceTypes).map((src) => {
+      let type: 'RSS' | 'PRESS' | 'X' | 'FORUM' = 'PRESS';
+      const upper = src.toUpperCase();
+      if (upper === 'RSS' || upper === 'PRESS' || upper === 'X' || upper === 'FORUM') {
+        type = upper;
+      }
+      return {
+        name: src,
+        type,
+        articleCount: uniquePlayerArticles.filter((a) => a.source === src).length || 1,
+      };
     });
 
-    const { trend, trendPercentage } = calculateTrend(mentionCount);
+    const scoreResult = calculateRumorScore({
+      mentionCount,
+      uniqueArticleCount,
+      sourceCount,
+      distribution: sourceDistribution,
+      latestPublishedAt: uniquePlayerArticles[0]?.publishedAt || new Date().toISOString(),
+    });
 
-    const latestNews: NewsItem[] = articles.slice(0, 5).map((a) => ({
-      id: a.id,
-      title: a.title,
-      url: a.url,
-      source: a.source,
-      publishedAt: a.publishedAt,
-      summary: a.summary,
-      playerId: player.id,
-    }));
+    const confidenceScore = calculateConfidence(
+      uniqueArticleCount,
+      sourceCount,
+      player.entityResolutionConfidence || 0.85,
+    );
+
+    const trendResult = calculateTrend(mentionCount);
 
     allRumors.push({
       player,
       mentionCount,
       uniqueArticleCount,
-      sourceCount: totalSourceCount,
-      trend,
-      trendPercentage,
-      score,
-      confidenceScore: Math.round(rumorConfidence * 100) / 100,
-      entityResolutionConfidence: player.entityResolutionConfidence || 1.0,
-      rumorConfidence: Math.round(rumorConfidence * 100) / 100,
-      recencyScore,
-      sourceDiversityScore,
-      sourceDistribution: distribution,
-      sources: sourcesList,
-      latestNews,
+      sourceCount,
+      trend: trendResult.trend,
+      trendPercentage: trendResult.trendPercentage,
+      score: scoreResult.score,
+      confidenceScore,
+      entityResolutionConfidence: player.entityResolutionConfidence,
+      rumorConfidence: confidenceScore,
+      recencyScore: scoreResult.recencyScore,
+      sourceDiversityScore: scoreResult.sourceDiversityScore,
+      sourceDistribution,
+      sources,
+      latestNews: uniquePlayerArticles,
       evidence,
     });
   }
 
-  // Step 9: Apply Fail-Closed Active Incoming Rumor Filter (Task 9)
+  // Step 10: Apply Fail-Closed Active Incoming Rumor Filter
   const incomingRumors: TransferRumor[] = [];
   let outgoingCount = 0;
   let dataConflictsCount = 0;
@@ -585,13 +694,20 @@ export async function aggregateLiveRumors(options?: AggregateRumorOptions): Prom
 
   incomingRumors.sort((a, b) => b.score - a.score);
 
-  // Step 10: Active UI counters
+  // Active UI counters
   const activeArticleIds = new Set<string>();
   incomingRumors.forEach((r) => {
     r.latestNews.forEach((n) => activeArticleIds.add(n.id));
   });
 
   const isConfigured = Boolean(getApiFootballKey());
+  const requestStats = getApiFootballRequestStats();
+  const registryStats = persistentPlayerRegistry.getStats();
+
+  const squadAgeSeconds = Math.max(
+    0,
+    Math.round((Date.now() - new Date(squadResolution.fetchedAt).getTime()) / 1000),
+  );
 
   return {
     rumors: incomingRumors,
@@ -610,13 +726,29 @@ export async function aggregateLiveRumors(options?: AggregateRumorOptions): Prom
       articlesFetched: activeNewsItems.length,
       transferRelevantArticles: relevantRawItems.length,
       uniqueArticles: uniqueArticles.length,
-      candidateSpansExtracted: extractedSpansCount,
-      uniqueNormalizedCandidates: candidateFrequencyMap.size,
+      candidateSpansExtracted: totalExtractedSpansCount,
+      uniqueNormalizedCandidates: clusters.length,
+      apiFootballRequests: requestStats,
+      candidatePipeline: {
+        extracted: totalExtractedSpansCount,
+        preApiRejected: preApiRejectedCount,
+        clustered: clusters.length,
+        registryHits: registryHitsCount,
+        negativeCacheHits: negativeCacheHitsCount,
+        apiResolutionAttempted: apiAttemptedCount,
+        apiResolutionVerified: apiVerifiedCount,
+        apiResolutionUnresolved: apiUnresolvedCount,
+      },
+      registry: {
+        playerCount: registryStats.count,
+        persistent: true,
+        hits: registryStats.hits,
+        misses: registryStats.misses,
+      },
       identityResolution: {
-
-        attempted: identityAttempted,
-        verified: identityVerified,
-        unresolved: identityUnresolved,
+        attempted: apiAttemptedCount,
+        verified: apiVerifiedCount,
+        unresolved: apiUnresolvedCount,
       },
       currentClubResolution: {
         attempted: clubAttempted,
@@ -630,13 +762,15 @@ export async function aggregateLiveRumors(options?: AggregateRumorOptions): Prom
         endpoint: squadResolution.endpoint,
         httpStatus: squadResolution.httpStatus,
         count: squadResolution.normalizedSquadCount,
+        liveOrCached: squadResolution.isCachedSnapshot ? 'CACHED' : 'LIVE',
         rawResponseCount: squadResolution.rawResponseCount,
         paginationPages: squadResolution.paginationPages,
         goalkeepersCount: squadResolution.goalkeepersCount,
         defendersCount: squadResolution.defendersCount,
         midfieldersCount: squadResolution.midfieldersCount,
         forwardsCount: squadResolution.forwardsCount,
-        fetchedAt: squadResolution.fetchedAt,
+        verifiedAt: squadResolution.fetchedAt,
+        ageSeconds: squadAgeSeconds,
         cacheHit: squadResolution.cacheHit,
         mismatchReport: squadResolution.mismatchReport,
       },
@@ -644,9 +778,10 @@ export async function aggregateLiveRumors(options?: AggregateRumorOptions): Prom
         currentSquad: outgoingCount,
         squadUnavailable: squadUnavailableCount,
         dataConflict: dataConflictsCount,
-        unresolved: identityUnresolved,
+        unresolved: apiUnresolvedCount,
         lowConfidence: lowConfidenceCount,
         stale: staleCount,
+        preApiRejected: preApiRejectedCount,
       },
       incomingBeforeSquadFilter,
       activeIncoming: incomingRumors.length,
