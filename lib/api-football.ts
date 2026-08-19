@@ -16,13 +16,20 @@ export const CURRENT_SEASON = 2026;
 export const GALATASARAY_DEFAULT_TEAM_ID = 645;
 export const GALATASARAY_TEAM_NAME = 'Galatasaray';
 
-export type SquadResolutionStatus = 'VERIFIED' | 'UNAVAILABLE' | 'STALE' | 'INVALID';
+export type SquadResolutionStatus =
+  | 'VERIFIED'
+  | 'VERIFIED_EMPTY'
+  | 'UNAVAILABLE'
+  | 'RATE_LIMITED'
+  | 'INVALID'
+  | 'DATA_CONFLICT';
 
 export interface SquadResolutionResult {
   status: SquadResolutionStatus;
   season: number;
   teamId: number;
   endpoint: string;
+  httpStatus: number;
   squad: Player[];
   rawResponseCount: number;
   normalizedSquadCount: number;
@@ -33,6 +40,7 @@ export interface SquadResolutionResult {
   forwardsCount: number;
   fetchedAt: string;
   cacheAgeMs: number;
+  cacheHit: boolean;
   mismatchReport?: string;
 }
 
@@ -233,10 +241,15 @@ export function normalizePosition(apiPosition?: string): Position {
 
 // ─── Base Fetcher ───────────────────────────────────────────────────────────
 
+interface FetchResult<T> {
+  payload: ApiFootballEnvelope<T>;
+  httpStatus: number;
+}
+
 async function fetchFromApiFootballEnvelope<T>(
   endpoint: string,
   params: Record<string, string> = {},
-): Promise<ApiFootballEnvelope<T>> {
+): Promise<FetchResult<T>> {
   const apiKey = process.env.API_FOOTBALL_KEY;
   if (!apiKey || apiKey.trim() === '') {
     throw new ApiFootballKeyMissingError();
@@ -291,10 +304,10 @@ async function fetchFromApiFootballEnvelope<T>(
       if (errorMsg.toLowerCase().includes('token') || errorMsg.toLowerCase().includes('key')) {
         throw new ApiFootballError(`API-Football key error: ${errorMsg}`, 401);
       }
-      throw new ApiFootballError(`API-Football error: ${errorMsg}`);
+      throw new ApiFootballError(`API-Football error: ${errorMsg}`, 400);
     }
 
-    return payload;
+    return { payload, httpStatus: res.status };
   } catch (error) {
     clearTimeout(timeoutId);
     if (error instanceof ApiFootballError) {
@@ -303,10 +316,12 @@ async function fetchFromApiFootballEnvelope<T>(
     if (error instanceof Error && error.name === 'AbortError') {
       throw new ApiFootballError(
         'API-Football request timed out after ' + DEFAULT_TIMEOUT_MS + 'ms',
+        408,
       );
     }
     throw new ApiFootballError(
       error instanceof Error ? error.message : 'Unknown API-Football error',
+      500,
     );
   }
 }
@@ -315,8 +330,8 @@ async function fetchFromApiFootball<T>(
   endpoint: string,
   params: Record<string, string> = {},
 ): Promise<T[]> {
-  const envelope = await fetchFromApiFootballEnvelope<T>(endpoint, params);
-  return envelope.response || [];
+  const result = await fetchFromApiFootballEnvelope<T>(endpoint, params);
+  return result.payload.response || [];
 }
 
 // ─── Team Resolution ────────────────────────────────────────────────────────
@@ -368,6 +383,7 @@ export async function getGalatasaraySquadDetailed(
     return {
       ...cachedEntry.data,
       cacheAgeMs: Date.now() - cachedEntry.createdAt,
+      cacheHit: true,
     };
   }
 
@@ -378,6 +394,7 @@ export async function getGalatasaraySquadDetailed(
       season: targetSeason,
       teamId: resolvedTeamId,
       endpoint: `${API_FOOTBALL_BASE_URL}/players/squads?team=${resolvedTeamId}`,
+      httpStatus: 0,
       squad: [],
       rawResponseCount: 0,
       normalizedSquadCount: 0,
@@ -388,7 +405,8 @@ export async function getGalatasaraySquadDetailed(
       forwardsCount: 0,
       fetchedAt: new Date().toISOString(),
       cacheAgeMs: 0,
-      mismatchReport: 'API_FOOTBALL_KEY is not configured in environment. Failing closed without synthetic squad.',
+      cacheHit: false,
+      mismatchReport: 'API_FOOTBALL_KEY is not configured in environment.',
     };
   }
 
@@ -397,11 +415,14 @@ export async function getGalatasaraySquadDetailed(
     let playersData: ApiFootballSquadPlayer[] = [];
     let endpointUsed = `${API_FOOTBALL_BASE_URL}/players/squads?team=${resolvedTeamId}`;
     let totalPages = 1;
+    let finalHttpStatus = 200;
 
     // 1. Try players/squads endpoint
-    const squadResponses = await fetchFromApiFootball<ApiFootballSquadResponse>('players/squads', {
+    const squadFetch = await fetchFromApiFootballEnvelope<ApiFootballSquadResponse>('players/squads', {
       team: String(resolvedTeamId),
     });
+    finalHttpStatus = squadFetch.httpStatus;
+    const squadResponses = squadFetch.payload.response || [];
 
     if (squadResponses && squadResponses.length > 0) {
       playersData = squadResponses[0].players || [];
@@ -415,9 +436,9 @@ export async function getGalatasaraySquadDetailed(
         season: String(targetSeason),
         page: '1',
       });
-
-      totalPages = firstPage.paging?.total || 1;
-      const allSeasonPlayers = [...(firstPage.response || [])];
+      finalHttpStatus = firstPage.httpStatus;
+      totalPages = firstPage.payload.paging?.total || 1;
+      const allSeasonPlayers = [...(firstPage.payload.response || [])];
 
       // Fetch remaining pages if paginated
       for (let p = 2; p <= totalPages; p++) {
@@ -426,8 +447,8 @@ export async function getGalatasaraySquadDetailed(
           season: String(targetSeason),
           page: String(p),
         });
-        if (nextPage.response) {
-          allSeasonPlayers.push(...nextPage.response);
+        if (nextPage.payload.response) {
+          allSeasonPlayers.push(...nextPage.payload.response);
         }
       }
 
@@ -440,6 +461,31 @@ export async function getGalatasaraySquadDetailed(
           photo: item.player.photo,
         }));
       }
+    }
+
+    // Check for verified empty response
+    if (playersData.length === 0) {
+      const emptyResult: SquadResolutionResult = {
+        status: 'VERIFIED_EMPTY',
+        season: targetSeason,
+        teamId: resolvedTeamId,
+        endpoint: endpointUsed,
+        httpStatus: finalHttpStatus,
+        squad: [],
+        rawResponseCount: 0,
+        normalizedSquadCount: 0,
+        paginationPages: totalPages,
+        goalkeepersCount: 0,
+        defendersCount: 0,
+        midfieldersCount: 0,
+        forwardsCount: 0,
+        fetchedAt: new Date().toISOString(),
+        cacheAgeMs: 0,
+        cacheHit: false,
+        mismatchReport: 'Upstream returned 0 players for team ' + resolvedTeamId,
+      };
+      setCached(cacheKey, emptyResult, SQUAD_CACHE_TTL);
+      return emptyResult;
     }
 
     // 3. Deduplicate players by numeric ID
@@ -512,6 +558,7 @@ export async function getGalatasaraySquadDetailed(
       season: targetSeason,
       teamId: resolvedTeamId,
       endpoint: endpointUsed,
+      httpStatus: finalHttpStatus,
       squad: normalizedSquad,
       rawResponseCount: playersData.length,
       normalizedSquadCount: normalizedSquad.length,
@@ -522,6 +569,7 @@ export async function getGalatasaraySquadDetailed(
       forwardsCount,
       fetchedAt: new Date().toISOString(),
       cacheAgeMs: 0,
+      cacheHit: false,
       mismatchReport,
     };
 
@@ -529,11 +577,26 @@ export async function getGalatasaraySquadDetailed(
     return result;
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : 'Unknown API error';
+    let status: SquadResolutionStatus = 'UNAVAILABLE';
+    let httpStatus = 500;
+
+    if (err instanceof ApiFootballRateLimitError) {
+      status = 'RATE_LIMITED';
+      httpStatus = 429;
+    } else if (err instanceof ApiFootballKeyMissingError) {
+      status = 'UNAVAILABLE';
+      httpStatus = 0;
+    } else if (err instanceof ApiFootballError) {
+      httpStatus = err.statusCode || 500;
+      if (httpStatus === 429) status = 'RATE_LIMITED';
+    }
+
     return {
-      status: 'UNAVAILABLE',
+      status,
       season: targetSeason,
       teamId: resolvedTeamId,
       endpoint: `${API_FOOTBALL_BASE_URL}/players/squads?team=${resolvedTeamId}`,
+      httpStatus,
       squad: [],
       rawResponseCount: 0,
       normalizedSquadCount: 0,
@@ -544,6 +607,7 @@ export async function getGalatasaraySquadDetailed(
       forwardsCount: 0,
       fetchedAt: new Date().toISOString(),
       cacheAgeMs: 0,
+      cacheHit: false,
       mismatchReport: errorMsg,
     };
   }
@@ -565,6 +629,12 @@ export interface ResolvedClubInfo {
   season: number;
   position: Position;
   resolvedAt: string;
+}
+
+export interface CurrentClubResolutionMetrics {
+  attempted: number;
+  succeeded: number;
+  failed: number;
 }
 
 /**
@@ -650,7 +720,12 @@ export async function resolveCurrentClub(
     let effectiveSeason = targetSeason;
 
     // If no records for current season, check previous season (targetSeason - 1)
-    if (!playerRecords || playerRecords.length === 0 || !playerRecords[0].statistics || playerRecords[0].statistics.length === 0) {
+    if (
+      !playerRecords ||
+      playerRecords.length === 0 ||
+      !playerRecords[0].statistics ||
+      playerRecords[0].statistics.length === 0
+    ) {
       playerRecords = await fetchFromApiFootball<ApiFootballPlayerItem>('players', {
         id: String(playerId),
         season: String(targetSeason - 1),
@@ -664,7 +739,7 @@ export async function resolveCurrentClub(
     const stats = item.statistics || [];
     if (stats.length === 0) return null;
 
-    // Select the most relevant/latest statistics entry
+    // Select the primary/latest statistics entry
     const primaryStat = stats[0];
     const clubInfo: ResolvedClubInfo = {
       clubName: primaryStat.team.name,

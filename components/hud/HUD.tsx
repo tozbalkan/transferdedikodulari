@@ -97,10 +97,13 @@ export function HUD({
         <div className="z-40 absolute bottom-8 left-1/2 -translate-x-1/2 pointer-events-none bg-[hsla(222,29%,7%,0.85)] backdrop-blur-md border border-white/10 rounded-full px-5 py-2 flex items-center gap-3 shadow-xl">
           <Radio className="w-3.5 h-3.5 text-[hsl(44,100%,59%)] animate-pulse flex-shrink-0" />
           <span className="text-xs font-mono text-white/90 tracking-wide">
-            CANLI RADAR AKTİF &bull; Sinyaller taranıyor...
+            {meta?.squadStatus && meta.squadStatus !== 'VERIFIED'
+              ? 'OYUNCU VERİSİ GEÇİCİ OLARAK DOĞRULANAMIYOR'
+              : 'CANLI RADAR AKTİF • Sinyaller taranıyor...'}
           </span>
         </div>
       ) : null}
+
 
       {/* ─── Layer 30: Bottom Bar (Controls Help Left) ─────────────────────── */}
       <div className="flex items-end justify-between w-full mt-auto">

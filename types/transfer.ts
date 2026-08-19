@@ -140,6 +140,8 @@ export interface RumorsApiMeta {
   totalArticles: number;
   generatedAt: string;
   sourceHealth?: RssSourceHealth[];
+  squadStatus?: string;
+  squadVerified?: boolean;
 }
 
 export interface RumorsApiResponse {

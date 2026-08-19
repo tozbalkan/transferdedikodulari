@@ -15,6 +15,7 @@ import { globalPlayerRegistry } from '@/lib/players/registry';
 import { calculateConfidence, calculateRumorScore, calculateTrend } from '@/lib/rumor/scorer';
 import {
   getGalatasaraySquadDetailed,
+  invalidateCache,
   CURRENT_SEASON,
   GALATASARAY_DEFAULT_TEAM_ID,
   type SquadResolutionStatus,
@@ -52,32 +53,56 @@ export interface CandidateDiscoveryDiagnostic {
   status: 'VERIFIED' | 'UNRESOLVED';
 }
 
-export interface AggregationResult {
-  rumors: TransferRumor[];
-  meta: RumorsApiMeta;
-  diagnostics?: {
+export interface SafeDiagnostics {
+  environment: string;
+  apiKeyConfigured: boolean;
+  articlesFetched: number;
+  transferRelevantArticles: number;
+  uniqueArticles: number;
+  candidatesExtracted: number;
+  playersVerified: number;
+  unresolvedCandidates: number;
+  squad: {
+    status: SquadResolutionStatus;
+    teamId: number;
     season: number;
-    squadStatus: SquadResolutionStatus;
-    squadSize: number;
-    squadEndpoint: string;
-    rawSquadResponseCount: number;
+    endpoint: string;
+    httpStatus: number;
+    count: number;
+    rawResponseCount: number;
     paginationPages: number;
     goalkeepersCount: number;
     defendersCount: number;
     midfieldersCount: number;
     forwardsCount: number;
-    fetchedArticles: number;
-    transferRelevantArticles: number;
-    uniqueArticles: number;
-    extractedCandidatesCount: number;
-    verifiedPlayersCount: number;
-    unresolvedCandidatesCount: number;
-    activeIncomingRumors: number;
-    activeOutgoingRumors: number;
-    dataConflictsCount: number;
-    discoveredCandidates: CandidateDiscoveryDiagnostic[];
-    rejected: RejectedRumorDiagnostic[];
+    fetchedAt: string;
+    cacheHit: boolean;
+    mismatchReport?: string;
   };
+  currentClubResolution: {
+    attempted: number;
+    succeeded: number;
+    failed: number;
+  };
+  rejectionCounts: {
+    currentSquad: number;
+    squadUnavailable: number;
+    dataConflict: number;
+    unresolved: number;
+    lowConfidence: number;
+    stale: number;
+  };
+  incomingBeforeSquadFilter: number;
+  activeIncoming: number;
+  renderedPlayers: number;
+  discoveredCandidates: CandidateDiscoveryDiagnostic[];
+  rejected: RejectedRumorDiagnostic[];
+}
+
+export interface AggregationResult {
+  rumors: TransferRumor[];
+  meta: RumorsApiMeta;
+  diagnostics?: SafeDiagnostics;
 }
 
 interface PlayerArticleBucket {
@@ -194,16 +219,24 @@ export function isActiveIncomingRumor(
   return { isActive: true };
 }
 
+export interface AggregateRumorOptions {
+  forceRefresh?: boolean;
+}
+
 /**
  * Execute the complete live real data pipeline:
  * Article Ingestion -> Exact Text-Span NER -> API-Football Entity Resolution -> ID-First Squad Filtering -> Evidence Binding -> Scoring
  */
-export async function aggregateLiveRumors(): Promise<AggregationResult> {
+export async function aggregateLiveRumors(options?: AggregateRumorOptions): Promise<AggregationResult> {
   const rejectedDiagnostics: RejectedRumorDiagnostic[] = [];
   const discoveredCandidates: CandidateDiscoveryDiagnostic[] = [];
 
-  // Step 1: Invalidate stale registry and dynamically resolve complete official 2026-2027 Galatasaray squad
-  globalPlayerRegistry.clear();
+  if (options?.forceRefresh) {
+    globalPlayerRegistry.clear();
+    invalidateCache();
+  }
+
+  // Step 1: Initialize squad from cache or dynamic resolution
   await globalPlayerRegistry.initializeSquad();
   const squadResolution = await getGalatasaraySquadDetailed(undefined, CURRENT_SEASON);
 
@@ -254,6 +287,9 @@ export async function aggregateLiveRumors(): Promise<AggregationResult> {
   let extractedCandidatesCount = 0;
   let verifiedPlayersCount = 0;
   let unresolvedCandidatesCount = 0;
+  let clubAttempted = 0;
+  let clubSucceeded = 0;
+  let clubFailed = 0;
 
   for (const article of uniqueArticles) {
     const articleEvidenceMap = new Map<string, { player: Player; evidence: RumorEvidence; confidence: number }>();
@@ -283,10 +319,12 @@ export async function aggregateLiveRumors(): Promise<AggregationResult> {
     extractedCandidatesCount += candidateSpans.length;
 
     for (const span of candidateSpans) {
+      clubAttempted++;
       const resolved = await globalPlayerRegistry.resolveCandidatePlayer(span.rawText);
 
       if (resolved && typeof resolved.externalId === 'number') {
         verifiedPlayersCount++;
+        clubSucceeded++;
         discoveredCandidates.push({
           articleTitle: article.title,
           candidateSpan: span.rawText,
@@ -316,6 +354,7 @@ export async function aggregateLiveRumors(): Promise<AggregationResult> {
         }
       } else {
         unresolvedCandidatesCount++;
+        clubFailed++;
         discoveredCandidates.push({
           articleTitle: article.title,
           candidateSpan: span.rawText,
@@ -443,6 +482,11 @@ export async function aggregateLiveRumors(): Promise<AggregationResult> {
   const incomingRumors: TransferRumor[] = [];
   let outgoingCount = 0;
   let dataConflictsCount = 0;
+  let squadUnavailableCount = 0;
+  let lowConfidenceCount = 0;
+  let staleCount = 0;
+
+  const incomingBeforeSquadFilter = allRumors.length;
 
   for (const rumor of allRumors) {
     const eligibility = isActiveIncomingRumor(
@@ -460,7 +504,14 @@ export async function aggregateLiveRumors(): Promise<AggregationResult> {
         outgoingCount++;
       } else if (eligibility.reason === 'DATA_CONFLICT') {
         dataConflictsCount++;
+      } else if (eligibility.reason === 'SQUAD_UNAVAILABLE') {
+        squadUnavailableCount++;
+      } else if (eligibility.reason === 'LOW_CONFIDENCE') {
+        lowConfidenceCount++;
+      } else if (eligibility.reason === 'STALE') {
+        staleCount++;
       }
+
       rejectedDiagnostics.push({
         playerName: rumor.player.name,
         reason: eligibility.reason || 'OUTGOING',
@@ -477,6 +528,10 @@ export async function aggregateLiveRumors(): Promise<AggregationResult> {
     r.latestNews.forEach((n) => activeArticleIds.add(n.id));
   });
 
+  const isConfigured = Boolean(
+    process.env.API_FOOTBALL_KEY && process.env.API_FOOTBALL_KEY.trim().length > 0,
+  );
+
   return {
     rumors: incomingRumors,
     meta: {
@@ -485,27 +540,51 @@ export async function aggregateLiveRumors(): Promise<AggregationResult> {
       totalArticles: activeArticleIds.size || uniqueArticles.length,
       generatedAt: new Date().toISOString(),
       sourceHealth,
+      squadStatus: squadResolution.status,
+      squadVerified: squadResolution.status === 'VERIFIED',
     },
     diagnostics: {
-      season: CURRENT_SEASON,
-      squadStatus: squadResolution.status,
-      squadSize: squadResolution.normalizedSquadCount,
-      squadEndpoint: squadResolution.endpoint,
-      rawSquadResponseCount: squadResolution.rawResponseCount,
-      paginationPages: squadResolution.paginationPages,
-      goalkeepersCount: squadResolution.goalkeepersCount,
-      defendersCount: squadResolution.defendersCount,
-      midfieldersCount: squadResolution.midfieldersCount,
-      forwardsCount: squadResolution.forwardsCount,
-      fetchedArticles: activeNewsItems.length,
+      environment: process.env.NODE_ENV || 'production',
+      apiKeyConfigured: isConfigured,
+      articlesFetched: activeNewsItems.length,
       transferRelevantArticles: relevantRawItems.length,
       uniqueArticles: uniqueArticles.length,
-      extractedCandidatesCount,
-      verifiedPlayersCount,
-      unresolvedCandidatesCount,
-      activeIncomingRumors: incomingRumors.length,
-      activeOutgoingRumors: outgoingCount,
-      dataConflictsCount,
+      candidatesExtracted: extractedCandidatesCount,
+      playersVerified: verifiedPlayersCount,
+      unresolvedCandidates: unresolvedCandidatesCount,
+      squad: {
+        status: squadResolution.status,
+        teamId: squadResolution.teamId,
+        season: squadResolution.season,
+        endpoint: squadResolution.endpoint,
+        httpStatus: squadResolution.httpStatus,
+        count: squadResolution.normalizedSquadCount,
+        rawResponseCount: squadResolution.rawResponseCount,
+        paginationPages: squadResolution.paginationPages,
+        goalkeepersCount: squadResolution.goalkeepersCount,
+        defendersCount: squadResolution.defendersCount,
+        midfieldersCount: squadResolution.midfieldersCount,
+        forwardsCount: squadResolution.forwardsCount,
+        fetchedAt: squadResolution.fetchedAt,
+        cacheHit: squadResolution.cacheHit,
+        mismatchReport: squadResolution.mismatchReport,
+      },
+      currentClubResolution: {
+        attempted: clubAttempted,
+        succeeded: clubSucceeded,
+        failed: clubFailed,
+      },
+      rejectionCounts: {
+        currentSquad: outgoingCount,
+        squadUnavailable: squadUnavailableCount,
+        dataConflict: dataConflictsCount,
+        unresolved: unresolvedCandidatesCount,
+        lowConfidence: lowConfidenceCount,
+        stale: staleCount,
+      },
+      incomingBeforeSquadFilter,
+      activeIncoming: incomingRumors.length,
+      renderedPlayers: incomingRumors.length,
       discoveredCandidates,
       rejected: rejectedDiagnostics,
     },

@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import { aggregateLiveRumors } from '@/lib/rumor/aggregator';
+import { aggregateLiveRumors, type SafeDiagnostics } from '@/lib/rumor/aggregator';
 import type { RumorsApiResponse } from '@/types/transfer';
 
 // Revalidate every 10 minutes (600 seconds) on edge/serverless
@@ -8,14 +8,15 @@ export const dynamic = 'force-dynamic';
 
 export async function GET(
   req: NextRequest,
-): Promise<NextResponse<RumorsApiResponse | { error: string }>> {
+): Promise<NextResponse<RumorsApiResponse & { diagnostics?: SafeDiagnostics } | { error: string }>> {
   try {
     const { searchParams } = new URL(req.url);
     const includeDiag = searchParams.get('diag') === '1' || process.env.NODE_ENV === 'development';
+    const forceRefresh = searchParams.get('refresh') === '1';
 
-    const result = await aggregateLiveRumors();
+    const result = await aggregateLiveRumors({ forceRefresh });
 
-    const response: RumorsApiResponse & { diagnostics?: Record<string, unknown> } = {
+    const response: RumorsApiResponse & { diagnostics?: SafeDiagnostics } = {
       data: result.rumors,
       meta: result.meta,
       ...(includeDiag && result.diagnostics ? { diagnostics: result.diagnostics } : {}),
