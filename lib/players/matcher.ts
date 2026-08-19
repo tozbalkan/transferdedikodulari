@@ -157,7 +157,7 @@ export function matchPlayerWithSpan(rawText: string, player: Player): MatchSpanR
     }
   }
 
-  // 4. Initials: "G. Martinelli"
+  // 4. Initials: "G. Martinelli", "R. Leao"
   if (player.firstName && player.lastName && player.lastName.length >= 4) {
     const normLast = normalizeText(player.lastName);
     const firstChar = normalizeText(player.firstName)[0];
@@ -207,6 +207,9 @@ export const KNOWN_CLUBS_AND_ORGANIZATIONS = [
   'tottenham',
   'newcastle',
   'newcastle united',
+  'nottingham forest',
+  'nottingham',
+  'forest',
   'guimaraes',
   'vitoria guimaraes',
   'aston villa',
@@ -228,6 +231,7 @@ export const KNOWN_CLUBS_AND_ORGANIZATIONS = [
   'marseille',
   'lyon',
   'monaco',
+  'as monaco',
   'lille',
   'rennes',
   'nice',
@@ -300,7 +304,26 @@ export const NON_PLAYER_ENTITIES = new Set([
   'dunya kupasi',
   'dunya kupas',
   'avrupa sampiyonasi',
-  // Managers & Officials (Non-players)
+  // Geographic / Countries / Continents
+  'guney amerika',
+  'kuzey amerika',
+  'suudi arabistan',
+  'suudi',
+  'arabistan',
+  'fildisi sahili',
+  'fildisi sahilli',
+  'fildisi',
+  'afrika',
+  'avrupa',
+  'asya',
+  'ispanya',
+  'italya',
+  'almanya',
+  'ingiltere',
+  'fransa',
+  'brezilya',
+  'portekiz',
+  // Managers & Journalists / Officials
   'okan buruk',
   'buruk',
   'dursun ozbek',
@@ -308,6 +331,8 @@ export const NON_PLAYER_ENTITIES = new Set([
   'erden timur',
   'maruf gunes',
   'cenk ergun',
+  'emre kaplan',
+  'acun ilicali',
   'mikel arteta',
   'arteta',
   'erik ten hag',
@@ -322,6 +347,8 @@ export const NON_PLAYER_ENTITIES = new Set([
   'fatih terim',
   'senol gunes',
   'sergen yalcin',
+  'francesco farioli',
+  'farioli',
   // Press phrases & nationalities
   'son dakika',
   'transfer haberi',
@@ -360,12 +387,43 @@ export const NON_PLAYER_ENTITIES = new Set([
   'senegalli',
   'kolombiyali',
   'uruguayli',
+  'real madridli',
+  'madridli',
+  'chelseali',
+  'arsenalli',
+  'galatasarayli',
+  'fenerbahceli',
+  'besiktasli',
+  'trabzonsporlu',
 ]);
 
+const LEADING_STOPWORDS = [
+  'herkes',
+  've',
+  'bu',
+  'o',
+  'bir',
+  'ilk',
+  'son',
+  'yeni',
+  'eski',
+  'tum',
+  'daha',
+  'iste',
+  'hem',
+  'gozu',
+  'tek',
+  'kulup',
+  'takim',
+  'haber',
+  'yildiz',
+  'milli',
+];
+
 /**
- * Clean prefixes like "Galatasaray X", "Milan X", "Arsenal X" to isolate the player name.
+ * Clean prefixes like "Galatasaray X", "Milan X", "Arsenal X", "Herkes X" to isolate the player name.
  */
-function stripClubPrefixes(candidate: string): string {
+export function stripCandidatePrefixes(candidate: string): string {
   let cleaned = candidate.trim();
   const prefixes = [
     'Galatasaray',
@@ -390,6 +448,11 @@ function stripClubPrefixes(candidate: string): string {
     'Lokomotiv Moskova',
     'Borussia Dortmund',
     'Hem',
+    'Ve',
+    'Herkes',
+    'İşte',
+    'Yeni',
+    'Yıldız',
   ];
 
   for (const prefix of prefixes) {
@@ -397,6 +460,16 @@ function stripClubPrefixes(candidate: string): string {
       cleaned = cleaned.slice(prefix.length).trim();
     }
   }
+
+  // Also strip common leading lowercase stopwords
+  const parts = cleaned.split(/\s+/);
+  if (parts.length > 2) {
+    const firstNorm = normalizeText(parts[0]);
+    if (LEADING_STOPWORDS.includes(firstNorm)) {
+      cleaned = parts.slice(1).join(' ').trim();
+    }
+  }
+
   return cleaned;
 }
 
@@ -413,12 +486,20 @@ export function extractCandidateSpans(rawText: string): CandidateTextSpan[] {
 
   while ((match = multiWordRegex.exec(rawText)) !== null) {
     const rawSpan = match[1];
-    const stripped = stripClubPrefixes(rawSpan);
+    const stripped = stripCandidatePrefixes(rawSpan);
     const norm = normalizeText(stripped);
 
     if (norm.length < 5) continue;
     if (NON_PLAYER_ENTITIES.has(norm)) continue;
     if (AMBIGUOUS_SURNAMES.has(norm)) continue;
+
+    // Reject demonyms or club adjectives with suffixes: -li, -lı, -lu, -lü
+    if (norm.endsWith('li') || norm.endsWith('li') || norm.endsWith('lu') || norm.endsWith('lu')) {
+      const stem = norm.slice(0, -2);
+      if (KNOWN_CLUBS_AND_ORGANIZATIONS.includes(stem) || NON_PLAYER_ENTITIES.has(stem)) {
+        continue;
+      }
+    }
 
     const parts = stripped.split(/\s+/);
     if (parts.length >= 2 && parts.length <= 3) {
@@ -437,7 +518,9 @@ export function extractCandidateSpans(rawText: string): CandidateTextSpan[] {
           pNorm === 'transferi' ||
           pNorm === 'haberi' ||
           pNorm === 'arsenal' ||
-          pNorm === 'guimaraes'
+          pNorm === 'guimaraes' ||
+          pNorm === 'arabistan' ||
+          pNorm === 'sahilli'
         );
       });
 
@@ -453,4 +536,84 @@ export function extractCandidateSpans(rawText: string): CandidateTextSpan[] {
   }
 
   return spans;
+}
+
+// ─── Identity Scoring Algorithm ───────────────────────────────────────────
+
+export interface IdentityScoringResult {
+  score: number;
+  matchMethod: 'EXACT_FULL_NAME' | 'CANONICAL_NAME' | 'FIRST_LAST_NAME' | 'INITIALS_SURNAME' | 'TOKEN_SUBSET' | 'UNMATCHED';
+}
+
+/**
+ * Deterministic candidate identity scoring against API-Football player record.
+ */
+export function scoreCandidateIdentity(
+  candidateQuery: string,
+  apiPlayer: {
+    name?: string;
+    firstname?: string;
+    lastname?: string;
+    position?: string;
+    age?: number;
+  },
+): IdentityScoringResult {
+  const normQuery = normalizeText(candidateQuery);
+  const normName = normalizeText(apiPlayer.name || '');
+  const normFirst = normalizeText(apiPlayer.firstname || '');
+  const normLast = normalizeText(apiPlayer.lastname || '');
+  const normCombined = normalizeText(`${normFirst} ${normLast}`.trim());
+
+  if (!normQuery || normQuery.length < 3) {
+    return { score: 0, matchMethod: 'UNMATCHED' };
+  }
+
+  // 1. Exact full name match
+  if (normQuery === normName || normQuery === normCombined) {
+    return { score: 1.0, matchMethod: 'EXACT_FULL_NAME' };
+  }
+
+  // 2. Canonical Name match
+  if (normName && (normQuery.includes(normName) || normName.includes(normQuery))) {
+    // If name is ambiguous surname only, require compatible first name
+    if (AMBIGUOUS_SURNAMES.has(normName)) {
+      if (normFirst && normQuery.includes(normFirst)) {
+        return { score: 0.9, matchMethod: 'CANONICAL_NAME' };
+      }
+      return { score: 0, matchMethod: 'UNMATCHED' };
+    }
+    return { score: 0.95, matchMethod: 'CANONICAL_NAME' };
+  }
+
+  // 3. First + Last name tokens present in query
+  const queryTokens = normQuery.split(/\s+/).filter(Boolean);
+  if (queryTokens.length >= 2) {
+    const firstToken = queryTokens[0];
+    const lastToken = queryTokens[queryTokens.length - 1];
+
+    const firstMatches = normFirst.includes(firstToken) || normName.includes(firstToken);
+    const lastMatches = normLast.includes(lastToken) || normName.includes(lastToken);
+
+    if (firstMatches && lastMatches) {
+      return { score: 0.92, matchMethod: 'FIRST_LAST_NAME' };
+    }
+
+    // 4. Initials match: "L. Sane", "V. Osimhen", "G. Martinelli"
+    if (lastMatches && firstToken.length === 1 && normFirst.startsWith(firstToken)) {
+      return { score: 0.88, matchMethod: 'INITIALS_SURNAME' };
+    }
+  }
+
+  // 5. Single strong distinctive surname with compatible first name
+  if (queryTokens.length === 2) {
+    const lastToken = queryTokens[1];
+    if (!AMBIGUOUS_SURNAMES.has(lastToken) && (normLast.includes(lastToken) || normName.includes(lastToken))) {
+      const firstToken = queryTokens[0];
+      if (normFirst.startsWith(firstToken[0]) || normFirst.includes(firstToken)) {
+        return { score: 0.85, matchMethod: 'TOKEN_SUBSET' };
+      }
+    }
+  }
+
+  return { score: 0, matchMethod: 'UNMATCHED' };
 }

@@ -1,4 +1,5 @@
 import type { Player, Position } from '@/types/transfer';
+import { normalizeText, scoreCandidateIdentity } from '@/lib/players/matcher';
 
 const API_FOOTBALL_BASE_URL = 'https://v3.football.api-sports.io';
 const DEFAULT_TIMEOUT_MS = 8000;
@@ -44,6 +45,23 @@ export interface SquadResolutionResult {
   mismatchReport?: string;
 }
 
+export interface PlayerResolutionTrace {
+  candidateName: string;
+  normalizedCandidateName: string;
+  requestedEndpoint: string;
+  queryParameters: Record<string, string>;
+  httpStatus: number;
+  apiErrors?: string;
+  responseCount: number;
+  selectedPlayerId?: number;
+  canonicalApiName?: string;
+  identityScore: number;
+  currentClub?: string;
+  currentClubId?: number;
+  position?: Position;
+  clubStatus?: 'VERIFIED' | 'UNAVAILABLE';
+}
+
 // ─── Custom Errors ──────────────────────────────────────────────────────────
 
 export class ApiFootballError extends Error {
@@ -60,7 +78,7 @@ export class ApiFootballError extends Error {
 export class ApiFootballKeyMissingError extends ApiFootballError {
   constructor() {
     super(
-      'API_FOOTBALL_KEY environment variable is missing. Please configure it in .env.local.',
+      'API_FOOTBALL_KEY environment variable is missing. Please configure it in Vercel.',
       500,
     );
     this.name = 'ApiFootballKeyMissingError';
@@ -112,9 +130,10 @@ interface ApiFootballPlayerItem {
     lastname: string;
     age?: number;
     nationality: string;
+    position?: string;
     photo?: string;
   };
-  statistics: Array<{
+  statistics?: Array<{
     team: {
       id: number;
       name: string;
@@ -126,8 +145,8 @@ interface ApiFootballPlayerItem {
       country?: string;
       season?: number;
     };
-    games: {
-      position: string;
+    games?: {
+      position?: string;
     };
   }>;
 }
@@ -153,6 +172,7 @@ interface CacheEntry<T> {
 }
 
 const memoryCache = new Map<string, CacheEntry<unknown>>();
+const resolutionTracesMap = new Map<string, PlayerResolutionTrace>();
 
 function getCachedEntry<T>(key: string): CacheEntry<T> | null {
   const entry = memoryCache.get(key);
@@ -180,6 +200,7 @@ function setCached<T>(key: string, data: T, ttlMs: number): void {
 export function invalidateCache(keyPrefix?: string): void {
   if (!keyPrefix) {
     memoryCache.clear();
+    resolutionTracesMap.clear();
     return;
   }
   for (const key of memoryCache.keys()) {
@@ -187,6 +208,10 @@ export function invalidateCache(keyPrefix?: string): void {
       memoryCache.delete(key);
     }
   }
+}
+
+export function getResolutionTraces(): PlayerResolutionTrace[] {
+  return Array.from(resolutionTracesMap.values());
 }
 
 // ─── Authoritative Position Normalization ───────────────────────────────────
@@ -250,6 +275,8 @@ export function getApiFootballKey(): string | undefined {
   return key && key.trim() !== '' ? key.trim() : undefined;
 }
 
+// ─── Base Fetcher ───────────────────────────────────────────────────────────
+
 interface FetchResult<T> {
   payload: ApiFootballEnvelope<T>;
   httpStatus: number;
@@ -263,7 +290,6 @@ async function fetchFromApiFootballEnvelope<T>(
   if (!apiKey) {
     throw new ApiFootballKeyMissingError();
   }
-
 
   const url = new URL(`${API_FOOTBALL_BASE_URL}/${endpoint}`);
   Object.entries(params).forEach(([key, value]) => {
@@ -379,7 +405,7 @@ export async function resolveGalatasarayTeam(): Promise<{ id: number; name: stri
   }
 }
 
-// ─── Fail-Closed Dynamic Squad Resolution with Full Completeness Checks ──────
+// ─── Authoritative Squad Resolution ─────────────────────────────────────────
 
 export async function getGalatasaraySquadDetailed(
   teamId?: number,
@@ -467,7 +493,7 @@ export async function getGalatasaraySquadDetailed(
           id: item.player.id,
           name: item.player.name,
           age: item.player.age,
-          position: item.statistics?.[0]?.games?.position || 'Midfielder',
+          position: item.statistics?.[0]?.games?.position || item.player.position || 'Midfielder',
           photo: item.player.photo,
         }));
       }
@@ -551,7 +577,7 @@ export async function getGalatasaraySquadDetailed(
     let status: SquadResolutionStatus = 'VERIFIED';
     let mismatchReport: string | undefined;
 
-    // Strict completeness checks: at least 18 players, all positions represented
+    // Completeness check
     if (
       normalizedSquad.length < 18 ||
       goalkeepersCount === 0 ||
@@ -639,20 +665,10 @@ export interface ResolvedClubInfo {
   season: number;
   position: Position;
   resolvedAt: string;
+  status: 'VERIFIED' | 'UNAVAILABLE';
 }
 
-export interface CurrentClubResolutionMetrics {
-  attempted: number;
-  succeeded: number;
-  failed: number;
-}
-
-/**
- * Resolve player basic identity from API-Football search endpoint.
- */
-export async function resolvePlayerIdentity(
-  query: string,
-): Promise<{
+export interface ResolvedPlayerIdentity {
   id: number;
   name: string;
   firstname: string;
@@ -660,8 +676,20 @@ export async function resolvePlayerIdentity(
   nationality: string;
   age?: number;
   photo?: string;
-} | null> {
-  const trimmed = query.trim();
+  position?: Position;
+  identityScore: number;
+  matchMethod: string;
+}
+
+/**
+ * Resolve player basic identity from API-Football.
+ * Queries `players/profiles?search=...` (or fallback `players?search=...&season=...`)
+ * and scores candidate results deterministically.
+ */
+export async function resolvePlayerIdentity(
+  candidateName: string,
+): Promise<ResolvedPlayerIdentity | null> {
+  const trimmed = candidateName.trim();
   if (!trimmed || trimmed.length < 3) return null;
 
   if (!getApiFootballKey()) {
@@ -669,59 +697,156 @@ export async function resolvePlayerIdentity(
   }
 
   const cacheKey = `player_identity:${trimmed.toLowerCase()}`;
-  const cached = getCached<{
-    id: number;
-    name: string;
-    firstname: string;
-    lastname: string;
-    nationality: string;
-    age?: number;
-    photo?: string;
-  }>(cacheKey);
+  const cached = getCached<ResolvedPlayerIdentity>(cacheKey);
   if (cached) return cached;
 
+  const trace: PlayerResolutionTrace = {
+    candidateName: trimmed,
+    normalizedCandidateName: normalizeText(trimmed),
+    requestedEndpoint: 'players/profiles',
+    queryParameters: { search: trimmed },
+    httpStatus: 200,
+    responseCount: 0,
+    identityScore: 0,
+  };
+
   try {
-    const results = await fetchFromApiFootball<ApiFootballPlayerItem>('players', {
-      search: trimmed,
-    });
+    let candidateItems: ApiFootballPlayerItem[] = [];
 
-    if (!results || results.length === 0) return null;
+    // Strategy 1: Dedicated `/players/profiles?search=...` (Does not require league/season)
+    try {
+      const profileResult = await fetchFromApiFootballEnvelope<ApiFootballPlayerItem>('players/profiles', {
+        search: trimmed,
+      });
+      trace.requestedEndpoint = 'players/profiles';
+      trace.httpStatus = profileResult.httpStatus;
+      candidateItems = profileResult.payload.response || [];
+    } catch (profileErr) {
+      // If profiles endpoint is not supported on current plan, fallback to `/players?search=...&season=...`
+      const errorMsg = profileErr instanceof Error ? profileErr.message : String(profileErr);
+      trace.apiErrors = errorMsg;
 
-    const first = results[0].player;
-    const identity = {
-      id: first.id,
-      name: first.name,
-      firstname: first.firstname || '',
-      lastname: first.lastname || first.name,
-      nationality: first.nationality || '',
-      age: first.age,
-      photo: first.photo,
+      try {
+        const seasonSearch = await fetchFromApiFootballEnvelope<ApiFootballPlayerItem>('players', {
+          search: trimmed,
+          season: String(CURRENT_SEASON),
+        });
+        trace.requestedEndpoint = 'players';
+        trace.queryParameters = { search: trimmed, season: String(CURRENT_SEASON) };
+        trace.httpStatus = seasonSearch.httpStatus;
+        candidateItems = seasonSearch.payload.response || [];
+      } catch (seasonErr) {
+        trace.apiErrors = seasonErr instanceof Error ? seasonErr.message : String(seasonErr);
+      }
+    }
+
+    // Strategy 2: If searching full name returned 0 results, search by last name token if distinct
+    if (candidateItems.length === 0) {
+      const parts = trimmed.split(/\s+/);
+      if (parts.length >= 2) {
+        const lastName = parts[parts.length - 1];
+        if (lastName.length >= 4) {
+          try {
+            const fallbackResult = await fetchFromApiFootballEnvelope<ApiFootballPlayerItem>('players/profiles', {
+              search: lastName,
+            });
+            if (fallbackResult.payload.response && fallbackResult.payload.response.length > 0) {
+              candidateItems = fallbackResult.payload.response;
+              trace.queryParameters = { search: lastName };
+            }
+          } catch {
+            // fallback ignore
+          }
+        }
+      }
+    }
+
+    trace.responseCount = candidateItems.length;
+
+    if (candidateItems.length === 0) {
+      resolutionTracesMap.set(trace.normalizedCandidateName, trace);
+      return null;
+    }
+
+    // Score all returned candidate profiles
+    let bestPlayer: ApiFootballPlayerItem['player'] | null = null;
+    let bestScore = 0;
+    let bestMatchMethod = 'UNMATCHED';
+
+    for (const item of candidateItems) {
+      const p = item.player;
+      const scoreRes = scoreCandidateIdentity(trimmed, p);
+      if (scoreRes.score > bestScore) {
+        bestScore = scoreRes.score;
+        bestPlayer = p;
+        bestMatchMethod = scoreRes.matchMethod;
+      }
+    }
+
+    trace.identityScore = bestScore;
+
+    // Threshold check (Must score >= 0.80)
+    if (!bestPlayer || bestScore < 0.80) {
+      resolutionTracesMap.set(trace.normalizedCandidateName, trace);
+      return null;
+    }
+
+    trace.selectedPlayerId = bestPlayer.id;
+    trace.canonicalApiName = bestPlayer.name;
+    trace.position = normalizePosition(bestPlayer.position);
+
+    const identity: ResolvedPlayerIdentity = {
+      id: bestPlayer.id,
+      name: bestPlayer.name,
+      firstname: bestPlayer.firstname || '',
+      lastname: bestPlayer.lastname || bestPlayer.name,
+      nationality: bestPlayer.nationality || '',
+      age: bestPlayer.age,
+      photo: bestPlayer.photo,
+      position: normalizePosition(bestPlayer.position),
+      identityScore: bestScore,
+      matchMethod: bestMatchMethod,
     };
 
     setCached(cacheKey, identity, PLAYER_SEARCH_CACHE_TTL);
+    resolutionTracesMap.set(trace.normalizedCandidateName, trace);
     return identity;
-  } catch {
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    trace.apiErrors = errorMsg;
+    resolutionTracesMap.set(trace.normalizedCandidateName, trace);
     return null;
   }
 }
 
 /**
- * Resolve current club and season membership for a given player ID in a specific season context.
+ * Resolve current club and season membership for a given verified player ID.
+ * Queries `players?id=${playerId}&season=...` across target seasons.
  */
 export async function resolveCurrentClub(
   playerId: number,
   targetSeason: number = CURRENT_SEASON,
-): Promise<ResolvedClubInfo | null> {
-  if (!getApiFootballKey()) {
-    return null;
-  }
-
+  initialPosition?: Position,
+): Promise<ResolvedClubInfo> {
   const cacheKey = `player_club:${playerId}:${targetSeason}`;
   const cached = getCached<ResolvedClubInfo>(cacheKey);
   if (cached) return cached;
 
+  const defaultUnavailable: ResolvedClubInfo = {
+    clubName: 'Unknown Club',
+    clubId: undefined,
+    season: targetSeason,
+    position: initialPosition || 'MIDFIELDER',
+    resolvedAt: new Date().toISOString(),
+    status: 'UNAVAILABLE',
+  };
+
+  if (!getApiFootballKey()) {
+    return defaultUnavailable;
+  }
+
   try {
-    // Query API-Football player record specifically for target season
+    // 1. Try target season (2026)
     let playerRecords = await fetchFromApiFootball<ApiFootballPlayerItem>('players', {
       id: String(playerId),
       season: String(targetSeason),
@@ -729,7 +854,7 @@ export async function resolveCurrentClub(
 
     let effectiveSeason = targetSeason;
 
-    // If no records for current season, check previous season (targetSeason - 1)
+    // 2. If no statistics for 2026, check 2025
     if (
       !playerRecords ||
       playerRecords.length === 0 ||
@@ -743,26 +868,54 @@ export async function resolveCurrentClub(
       effectiveSeason = targetSeason - 1;
     }
 
-    if (!playerRecords || playerRecords.length === 0) return null;
+    // 3. If no statistics for 2025, check 2024
+    if (
+      !playerRecords ||
+      playerRecords.length === 0 ||
+      !playerRecords[0].statistics ||
+      playerRecords[0].statistics.length === 0
+    ) {
+      playerRecords = await fetchFromApiFootball<ApiFootballPlayerItem>('players', {
+        id: String(playerId),
+        season: String(targetSeason - 2),
+      });
+      effectiveSeason = targetSeason - 2;
+    }
+
+    if (!playerRecords || playerRecords.length === 0 || !playerRecords[0].statistics || playerRecords[0].statistics.length === 0) {
+      setCached(cacheKey, defaultUnavailable, CURRENT_CLUB_CACHE_TTL);
+      return defaultUnavailable;
+    }
 
     const item = playerRecords[0];
     const stats = item.statistics || [];
-    if (stats.length === 0) return null;
-
-    // Select the primary/latest statistics entry
     const primaryStat = stats[0];
+
     const clubInfo: ResolvedClubInfo = {
       clubName: primaryStat.team.name,
       clubId: primaryStat.team.id,
       season: effectiveSeason,
-      position: normalizePosition(primaryStat.games?.position),
+      position: normalizePosition(primaryStat.games?.position || initialPosition),
       resolvedAt: new Date().toISOString(),
+      status: 'VERIFIED',
     };
 
     setCached(cacheKey, clubInfo, CURRENT_CLUB_CACHE_TTL);
+
+    // Update trace if exists
+    for (const trace of resolutionTracesMap.values()) {
+      if (trace.selectedPlayerId === playerId) {
+        trace.currentClub = clubInfo.clubName;
+        trace.currentClubId = clubInfo.clubId;
+        trace.position = clubInfo.position;
+        trace.clubStatus = 'VERIFIED';
+      }
+    }
+
     return clubInfo;
   } catch {
-    return null;
+    setCached(cacheKey, defaultUnavailable, CURRENT_CLUB_CACHE_TTL);
+    return defaultUnavailable;
   }
 }
 
@@ -773,13 +926,10 @@ export async function searchPlayer(
   name: string,
   targetSeason: number = CURRENT_SEASON,
 ): Promise<Player[]> {
-  const trimmed = name.trim();
-  if (!trimmed || trimmed.length < 3) return [];
-
-  const identity = await resolvePlayerIdentity(trimmed);
+  const identity = await resolvePlayerIdentity(name);
   if (!identity) return [];
 
-  const clubInfo = await resolveCurrentClub(identity.id, targetSeason);
+  const clubInfo = await resolveCurrentClub(identity.id, targetSeason, identity.position);
 
   const aliases: string[] = [identity.name];
   if (identity.lastname && identity.lastname !== identity.name) {
@@ -796,16 +946,16 @@ export async function searchPlayer(
     name: identity.name,
     firstName: identity.firstname,
     lastName: identity.lastname,
-    position: clubInfo?.position || 'MIDFIELDER',
-    currentClub: clubInfo?.clubName || 'Unknown Club',
-    currentClubId: clubInfo?.clubId,
-    currentClubSeason: clubInfo?.season || targetSeason,
-    currentClubResolvedAt: clubInfo?.resolvedAt || new Date().toISOString(),
+    position: clubInfo.position || identity.position || 'MIDFIELDER',
+    currentClub: clubInfo.clubName,
+    currentClubId: clubInfo.clubId,
+    currentClubSeason: clubInfo.season || targetSeason,
+    currentClubResolvedAt: clubInfo.resolvedAt,
     nationality: identity.nationality,
     age: identity.age,
     photo: identity.photo,
     aliases,
-    entityResolutionConfidence: 1.0,
+    entityResolutionConfidence: identity.identityScore,
     lastResolvedAt: new Date().toISOString(),
   };
 
