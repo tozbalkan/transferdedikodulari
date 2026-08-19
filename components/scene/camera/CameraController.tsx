@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, useMemo } from 'react';
 import { useThree, useFrame } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
@@ -18,14 +18,24 @@ export function CameraController({
 }: CameraControllerProps) {
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
   const isInitializedRef = useRef(false);
+  const isTransitioningRef = useRef(false);
+  const isUserInteractingRef = useRef(false);
+
+  const prevPlayerPosRef = useRef<THREE.Vector3 | null>(null);
+  const targetGoalRef = useRef<THREE.Vector3>(new THREE.Vector3(0, 0, -3));
+  const cameraGoalRef = useRef<THREE.Vector3>(new THREE.Vector3(-2, 36, 46));
+
   const { camera } = useThree();
 
-  const defaultTarget = pitchInfo ? pitchInfo.center : new THREE.Vector3(0, 0, -3);
+  const defaultTarget = useMemo(
+    () => (pitchInfo ? pitchInfo.center : new THREE.Vector3(0, 0, -3)),
+    [pitchInfo],
+  );
   const pitchDiagonal = pitchInfo ? pitchInfo.diagonal : 125;
-  const minDistance = Math.max(22, pitchDiagonal * 0.25);
-  const maxDistance = Math.max(120, pitchDiagonal * 1.35);
+  const minDistance = Math.max(10, pitchDiagonal * 0.12);
+  const maxDistance = Math.max(180, pitchDiagonal * 1.6);
 
-  // Position camera once geometry is computed
+  // Initial camera positioning once geometry is computed
   useEffect(() => {
     if (pitchInfo && !isInitializedRef.current && controlsRef.current) {
       const config = getInitialBroadcastCamera(pitchInfo, 46);
@@ -33,60 +43,98 @@ export function CameraController({
       controlsRef.current.target.set(config.target.x, config.target.y, config.target.z);
       camera.lookAt(config.target.x, config.target.y, config.target.z);
       controlsRef.current.update();
+
+      targetGoalRef.current.copy(config.target);
+      cameraGoalRef.current.copy(config.position);
       isInitializedRef.current = true;
     }
   }, [pitchInfo, camera]);
 
-  // Contextual focus interpolation (smooth framing without losing pitch context)
+  // Handle player selection and deselection transition goals
+  useEffect(() => {
+    // Check if playerWorldPosition changed
+    const hadPrev = !!prevPlayerPosRef.current;
+    const hasCurrent = !!playerWorldPosition;
+    const posChanged =
+      (hadPrev !== hasCurrent) ||
+      (hadPrev && hasCurrent && prevPlayerPosRef.current!.distanceTo(playerWorldPosition!) > 0.1);
+
+    if (posChanged) {
+      prevPlayerPosRef.current = playerWorldPosition ? playerWorldPosition.clone() : null;
+
+      if (playerWorldPosition) {
+        // Player focus: contextual framing (player + surrounding tactical pitch)
+        const contextualTarget = new THREE.Vector3().lerpVectors(
+          defaultTarget,
+          playerWorldPosition,
+          0.45,
+        );
+        contextualTarget.x -= 3.5;
+        contextualTarget.y = 1.0;
+
+        const idealCameraPos = new THREE.Vector3(
+          contextualTarget.x - 12,
+          28,
+          contextualTarget.z + 34,
+        );
+
+        targetGoalRef.current.copy(contextualTarget);
+        cameraGoalRef.current.copy(idealCameraPos);
+        isTransitioningRef.current = true;
+      } else if (hadPrev && pitchInfo) {
+        // Smoothly transition back to initial stadium overview on deselection
+        const defaultCam = getInitialBroadcastCamera(pitchInfo, 46);
+        targetGoalRef.current.copy(defaultCam.target);
+        cameraGoalRef.current.copy(defaultCam.position);
+        isTransitioningRef.current = true;
+      }
+    }
+  }, [playerWorldPosition, pitchInfo, defaultTarget]);
+
+  // Hook into OrbitControls user interaction events to immediately yield control
+  useEffect(() => {
+    const controls = controlsRef.current;
+    if (!controls) return;
+
+    const onStart = () => {
+      isUserInteractingRef.current = true;
+      isTransitioningRef.current = false; // User took over, cancel automated lerp
+    };
+
+    const onEnd = () => {
+      isUserInteractingRef.current = false;
+    };
+
+    controls.addEventListener('start', onStart);
+    controls.addEventListener('end', onEnd);
+
+    return () => {
+      controls.removeEventListener('start', onStart);
+      controls.removeEventListener('end', onEnd);
+    };
+  }, []);
+
+  // Frame animation: only active during animated transitions between views
   useFrame((_, delta) => {
     if (!controlsRef.current) return;
 
-    const currentTarget = controlsRef.current.target;
+    if (isTransitioningRef.current && !isUserInteractingRef.current) {
+      const currentTarget = controlsRef.current.target;
+      const targetDist = currentTarget.distanceTo(targetGoalRef.current);
+      const camDist = camera.position.distanceTo(cameraGoalRef.current);
 
-    if (playerWorldPosition) {
-      // 1. Contextual target: lerp(pitchCenter, playerWorldPosition, 0.45)
-      const contextualTarget = new THREE.Vector3().lerpVectors(
-        defaultTarget,
-        playerWorldPosition,
-        0.45,
-      );
-
-      // Safe area compensation: shift framing slightly left so bottom-right detail panel does not occlude player
-      contextualTarget.x -= 4.0;
-      contextualTarget.y = 1.0;
-
-      if (currentTarget.distanceTo(contextualTarget) > 0.05) {
-        currentTarget.lerp(contextualTarget, Math.min(1, delta * 3.0));
+      if (targetDist > 0.04) {
+        currentTarget.lerp(targetGoalRef.current, Math.min(1, delta * 3.5));
         controlsRef.current.update();
       }
 
-      // 2. Elevated broadcast camera position (distance ~42m, retaining ~65% pitch context)
-      const idealCameraPos = new THREE.Vector3(
-        contextualTarget.x - 14,
-        30,
-        contextualTarget.z + 36,
-      );
-
-      if (camera.position.distanceTo(idealCameraPos) > 0.15) {
-        camera.position.lerp(idealCameraPos, Math.min(1, delta * 2.2));
-      }
-    } else {
-      // Return smoothly to default pitch center broadcast view
-      if (currentTarget.distanceTo(defaultTarget) > 0.05) {
-        currentTarget.lerp(defaultTarget, Math.min(1, delta * 3.0));
-        controlsRef.current.update();
+      if (camDist > 0.08) {
+        camera.position.lerp(cameraGoalRef.current, Math.min(1, delta * 2.8));
       }
 
-      if (pitchInfo) {
-        const defaultCam = getInitialBroadcastCamera(pitchInfo, 46);
-        const defaultCamPos = new THREE.Vector3(
-          defaultCam.position.x,
-          defaultCam.position.y,
-          defaultCam.position.z,
-        );
-        if (camera.position.distanceTo(defaultCamPos) > 0.2) {
-          camera.position.lerp(defaultCamPos, Math.min(1, delta * 2.0));
-        }
+      // Transition complete: release camera for free manual exploration
+      if (targetDist <= 0.04 && camDist <= 0.08) {
+        isTransitioningRef.current = false;
       }
     }
   });
@@ -97,15 +145,18 @@ export function CameraController({
       target={[defaultTarget.x, defaultTarget.y, defaultTarget.z]}
       enableRotate
       enableZoom
-      enablePan={false}
+      enablePan
+      screenSpacePanning
       minDistance={minDistance}
       maxDistance={maxDistance}
-      minPolarAngle={0.15} // Can look straight down onto pitch
-      maxPolarAngle={Math.PI / 2.32} // Cannot dip below turf into stands
-      rotateSpeed={0.65}
-      zoomSpeed={0.85}
+      minPolarAngle={0.05} // Allows high aerial top-down tactical overview
+      maxPolarAngle={Math.PI / 2.05} // Wide sideline angle without clipping below turf
+      rotateSpeed={0.75}
+      zoomSpeed={0.9}
+      panSpeed={0.8}
       enableDamping
-      dampingFactor={0.08}
+      dampingFactor={0.06}
     />
   );
 }
+

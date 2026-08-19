@@ -29,7 +29,7 @@ export function RealStadium({ onGeometryComputed, children }: RealStadiumProps) 
   const { clonedScene, pitchInfo } = useMemo(() => {
     const scene = gltf.scene.clone(true);
 
-    // 1. Remove unwanted Google Earth terrain, roof domes, billboards, scoreboards, and signs
+    // 1. Remove unwanted Google Earth terrain, roof arches/canopies, billboards, scoreboards, and signs
     const toRemove: THREE.Object3D[] = [];
     scene.traverse((child) => {
       const name = (child.name || '').toLowerCase();
@@ -38,12 +38,17 @@ export function RealStadium({ onGeometryComputed, children }: RealStadiumProps) 
         name.includes('snapshot') ||
         name.includes('terrain') ||
         name.includes('component#3') ||
+        name.includes('component#14') ||
         name.includes('component#41') ||
         name.includes('component#46') ||
         name.includes('group#3') ||
         name.includes('group#2') ||
         name.includes('roof') ||
         name.includes('dome') ||
+        name.includes('çatı') ||
+        name.includes('cati') ||
+        name.includes('canopy') ||
+        name.includes('truss') ||
         name.includes('kale') ||
         name.includes('goal') ||
         name.includes('bilboard') ||
@@ -51,7 +56,8 @@ export function RealStadium({ onGeometryComputed, children }: RealStadiumProps) 
         name.includes('skorboard') ||
         name.includes('scoreboard') ||
         name.includes('ttarenayazi') ||
-        name.includes('pankart')
+        name.includes('pankart') ||
+        name.includes('discepheustarka')
       ) {
         toRemove.push(child);
       }
@@ -71,7 +77,7 @@ export function RealStadium({ onGeometryComputed, children }: RealStadiumProps) 
           mat.side = THREE.DoubleSide;
           const matName = (mat.name || '').toLowerCase();
 
-          // Hide unwanted billboard, scoreboard, snapshot, and terrain materials
+          // Hide unwanted billboard, scoreboard, snapshot, roof canopy, and terrain materials
           if (
             matName.includes('snapshot') ||
             matName.includes('google') ||
@@ -83,7 +89,11 @@ export function RealStadium({ onGeometryComputed, children }: RealStadiumProps) 
             matName.includes('skorboard') ||
             matName.includes('scoreboard') ||
             matName.includes('ttarenayazi') ||
-            matName.includes('pankart')
+            matName.includes('pankart') ||
+            matName.includes('discepheustarka') ||
+            matName.includes('roof') ||
+            matName.includes('çatı') ||
+            matName.includes('cati')
           ) {
             child.visible = false;
             child.geometry = new THREE.BufferGeometry();
